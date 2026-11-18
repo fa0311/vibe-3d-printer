@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D プレビュー</title>
+<style>
+  .v3d { font-family: var(--font-sans, system-ui, sans-serif); color: var(--foreground, #1f2328); }
+  .v3d-stage {
+    position: relative; height: 460px; overflow: hidden; touch-action: none;
+    background: var(--card, #f3f4f6); border: 1px solid var(--border, #d0d7de);
+    border-radius: var(--radius, 8px);
+  }
+  .v3d-stage canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  .v3d-stage canvas:active { cursor: grabbing; }
+  .v3d-views { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .v3d-views button {
+    font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
+    color: var(--foreground, #1f2328); background: var(--background, #fff);
+    border: 1px solid var(--border, #d0d7de); border-radius: 999px;
+  }
+  .v3d-views button:hover { border-color: var(--ring, #8b949e); }
+  .v3d-hint {
+    position: absolute; bottom: 8px; left: 12px; font-size: 12px; pointer-events: none;
+    color: var(--muted-foreground, #6e7781);
+  }
+  .v3d-meta {
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    font-size: 13px; padding: 8px 2px 0; color: var(--muted-foreground, #57606a);
+  }
+  .v3d-meta b { color: var(--foreground, #1f2328); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="v3d">
+  <div class="v3d-stage">
+    <canvas></canvas>
+    <div class="v3d-views">
+      <button data-view="iso">斜め</button>
+      <button data-view="top">上</button>
+      <button data-view="front">正面</button>
+      <button data-view="right">右</button>
+      <button data-view="under">裏</button>
+    </div>
+    <div class="v3d-hint">ドラッグで回転・ホイール/ピンチで拡大縮小</div>
+  </div>
+  <div class="v3d-meta">
+    <span><b id="v3d-title"></b></span>
+    <span><b id="v3d-size"></b> ・ 床の1マス = 10 mm</span>
+  </div>
+</div>
+<script>
+(() => {
+  const DATA = /*DATA*/null;
+  const canvas = document.querySelector(".v3d-stage canvas");
+  const gl = canvas.getContext("webgl2", { antialias: true, alpha: true, premultipliedAlpha: false });
+  document.getElementById("v3d-title").textContent = DATA.title;
+  document.getElementById("v3d-size").textContent = DATA.caption;
+  if (!gl) {
+    document.querySelector(".v3d-hint").textContent = "このブラウザは WebGL2 に対応していません";
+    return;
+  }
+
+  const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const compile = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  };
+  const program = (vs, fs) => {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.bindAttribLocation(p, 0, "aPos"); gl.bindAttribLocation(p, 1, "aNrm");
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  };
+
+  // 頂点は外接箱の中で 16bit に量子化してある。uMin/uSize で mm に戻す。
+  const solid = program(`#version 300 es
+    in vec3 aPos; in vec3 aNrm;
+    uniform mat4 uMVP; uniform mat4 uView; uniform vec3 uMin; uniform vec3 uSize;
+    out vec3 vN;
+    void main() {
+      vN = mat3(uView) * aNrm;
+      gl_Position = uMVP * vec4(uMin + aPos * uSize, 1.0);
+    }`, `#version 300 es
+    precision mediump float;
+    in vec3 vN; out vec4 o;
+    void main() {
+      vec3 n = normalize(vN);
+      float key = max(dot(n, normalize(vec3(0.35, 0.55, 0.75))), 0.0);
+      float fill = max(dot(n, normalize(vec3(-0.6, -0.2, 0.5))), 0.0);
+      vec3 base = vec3(0.94, 0.63, 0.29);
+      o = vec4(base * (0.34 + 0.62 * key + 0.20 * fill), 1.0);
+    }`);
+  const flat = program(`#version 300 es
+    in vec3 aPos;
+    uniform mat4 uMVP; uniform vec3 uMin; uniform vec3 uSize;
+    void main() { gl_Position = uMVP * vec4(uMin + aPos * uSize, 1.0); }`, `#version 300 es
+    precision mediump float;
+    uniform vec4 uColor; out vec4 o;
+    void main() { o = uColor; }`);
+
+  const buffer = (target, data) => {
+    const b = gl.createBuffer(); gl.bindBuffer(target, b);
+    gl.bufferData(target, data, gl.STATIC_DRAW); return b;
+  };
+  const idx = new Uint32Array(bytes(DATA.idx).buffer);
+  const linePos = new Uint16Array(bytes(DATA.lines).buffer);
+
+  const meshVao = gl.createVertexArray();
+  gl.bindVertexArray(meshVao);
+  buffer(gl.ARRAY_BUFFER, bytes(DATA.pos));
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, true, 0, 0);
+  buffer(gl.ARRAY_BUFFER, bytes(DATA.nrm));
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.BYTE, true, 4, 0);
+  buffer(gl.ELEMENT_ARRAY_BUFFER, idx);
+
+  const lineVao = gl.createVertexArray();
+  gl.bindVertexArray(lineVao);
+  buffer(gl.ARRAY_BUFFER, linePos);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, true, 0, 0);
+
+  // 床の方眼 (10 mm)。大きさの見当をつけるためのもの。
+  const [mn, sz] = [DATA.min, DATA.size];
+  const g0 = [Math.floor(mn[0] / 10) * 10 - 10, Math.floor(mn[1] / 10) * 10 - 10];
+  const g1 = [Math.ceil((mn[0] + sz[0]) / 10) * 10 + 10, Math.ceil((mn[1] + sz[1]) / 10) * 10 + 10];
+  const grid = [];
+  for (let x = g0[0]; x <= g1[0]; x += 10) grid.push(x, g0[1], mn[2], x, g1[1], mn[2]);
+  for (let y = g0[1]; y <= g1[1]; y += 10) grid.push(g0[0], y, mn[2], g1[0], y, mn[2]);
+  const gridVao = gl.createVertexArray();
+  gl.bindVertexArray(gridVao);
+  buffer(gl.ARRAY_BUFFER, new Float32Array(grid));
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  const center = [mn[0] + sz[0] / 2, mn[1] + sz[1] / 2, mn[2] + sz[2] / 2];
+  const radius = Math.hypot(sz[0], sz[1], sz[2]) / 2;
+  const FOV = 28 * Math.PI / 180;
+  const VIEWS = {
+    iso: [-0.9, 0.5], top: [-Math.PI / 2, 1.5607], front: [-Math.PI / 2, 0],
+    right: [0, 0], under: [2.2, -0.6],
+  };
+  let yaw, pitch, zoom;
+  const setView = name => { [yaw, pitch] = VIEWS[name]; zoom = 1; draw(); };
+
+  const mul = (a, b) => {
+    const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+      let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+      o[c * 4 + r] = s;
+    }
+    return o;
+  };
+  const norm = v => { const l = Math.hypot(...v); return v.map(x => x / l); };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  function draw() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    gl.viewport(0, 0, w, h);
+
+    const aspect = w / h;
+    const fit = radius / Math.sin(Math.min(FOV, 2 * Math.atan(Math.tan(FOV / 2) * aspect)) / 2);
+    const dist = fit * 1.08 / zoom;
+    const dir = [Math.cos(pitch) * Math.cos(yaw), Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch)];
+    const eye = center.map((c, i) => c + dir[i] * dist);
+    const f = norm(dir.map(v => -v));
+    const s = norm(cross(f, [0, 0, 1]));
+    const u = cross(s, f);
+    const view = new Float32Array([
+      s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0,
+      -dot(s, eye), -dot(u, eye), dot(f, eye), 1,
+    ]);
+    const near = Math.max(dist - radius * 3, dist * 0.01), far = dist + radius * 6;
+    const t = 1 / Math.tan(FOV / 2);
+    const proj = new Float32Array([
+      t / aspect, 0, 0, 0, 0, t, 0, 0,
+      0, 0, (far + near) / (near - far), -1, 0, 0, 2 * far * near / (near - far), 0,
+    ]);
+    const mvp = mul(proj, view);
+
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.useProgram(flat);
+    gl.uniformMatrix4fv(gl.getUniformLocation(flat, "uMVP"), false, mvp);
+    gl.uniform3f(gl.getUniformLocation(flat, "uMin"), 0, 0, 0);
+    gl.uniform3f(gl.getUniformLocation(flat, "uSize"), 1, 1, 1);
+    gl.uniform4f(gl.getUniformLocation(flat, "uColor"), 0.5, 0.5, 0.5, 0.6);
+    gl.bindVertexArray(gridVao);
+    gl.drawArrays(gl.LINES, 0, grid.length / 3);
+
+    gl.useProgram(solid);
+    gl.uniformMatrix4fv(gl.getUniformLocation(solid, "uMVP"), false, mvp);
+    gl.uniformMatrix4fv(gl.getUniformLocation(solid, "uView"), false, view);
+    gl.uniform3fv(gl.getUniformLocation(solid, "uMin"), mn);
+    gl.uniform3fv(gl.getUniformLocation(solid, "uSize"), sz);
+    gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);
+    gl.bindVertexArray(meshVao);
+    gl.drawElements(gl.TRIANGLES, idx.length, gl.UNSIGNED_INT, 0);
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+
+    gl.useProgram(flat);
+    gl.uniform3fv(gl.getUniformLocation(flat, "uMin"), mn);
+    gl.uniform3fv(gl.getUniformLocation(flat, "uSize"), sz);
+    gl.uniform4f(gl.getUniformLocation(flat, "uColor"), 0.17, 0.13, 0.09, 0.9);
+    gl.bindVertexArray(lineVao);
+    gl.drawArrays(gl.LINES, 0, linePos.length / 3);
+    gl.bindVertexArray(null);
+  }
+
+  const pointers = new Map();
+  let pinch = 0;
+  canvas.addEventListener("pointerdown", e => {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, [e.clientX, e.clientY]);
+    pinch = 0;
+  });
+  canvas.addEventListener("pointermove", e => {
+    const prev = pointers.get(e.pointerId);
+    if (!prev) return;
+    pointers.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pointers.size === 1) {
+      yaw -= (e.clientX - prev[0]) * 0.008;
+      pitch = Math.max(-1.5607, Math.min(1.5607, pitch + (e.clientY - prev[1]) * 0.008));
+    } else {
+      const [a, b] = [...pointers.values()];
+      const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      if (pinch) zoom = Math.max(0.3, Math.min(12, zoom * d / pinch));
+      pinch = d;
+    }
+    draw();
+  });
+  const release = e => { pointers.delete(e.pointerId); pinch = 0; };
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+  canvas.addEventListener("wheel", e => {
+    e.preventDefault();
+    zoom = Math.max(0.3, Math.min(12, zoom * Math.exp(-e.deltaY * 0.0015)));
+    draw();
+  }, { passive: false });
+  document.querySelectorAll(".v3d-views button").forEach(b =>
+    b.addEventListener("click", () => setView(b.dataset.view)));
+  new ResizeObserver(draw).observe(canvas);
+  setView("iso");
+})();
+</script>
+</body>
+</html>

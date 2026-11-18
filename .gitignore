@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+
+# 生成物 (part.py からいつでも作り直せる)
+parts/*/out/
+
+# プリンタの接続情報 (アクセスコードを含む)
+printer.local.toml

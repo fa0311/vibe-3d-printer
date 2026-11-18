@@ -1,0 +1,10 @@
+# プリンタの構成と、スライス時の既定値。秘密情報はここに書かない (printer.local.toml へ)。
+
+[printer]
+machine = "Bambu Lab A1 mini 0.4 nozzle"
+profile_suffix = "@BBL A1M"
+plate = "Textured PEI Plate"
+
+[defaults]
+process = "0.20mm Standard"
+filament = "Bambu PLA Basic"
