@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# 公開リポジトリに、持ち主や機器に結びつく情報を push しないための歯止め。
+# 公開リポジトリに、認証情報と、この環境や持ち主を特定する値を push しないための歯止め。
+# (この環境で調べて分かったこと — 機体の精度やクセ、確かめた手順 — は書いてよく、止めない)
 # これから push されるコミットの「追加された行」と件名を調べ、見つかったら push を止める。
 # 有効化: git config core.hooksPath scripts/hooks  (scripts/setup.sh が設定する)
 set -euo pipefail
 
 PATTERNS=(
-  '3DP-[0-9A-Z]{3}-[0-9]{3}'                                  # プリンタ名
-  'user_[0-9]{6,}'                                            # Bambu のアカウント名
-  '(access_code|serial|device_name|ip) *= *"[^"]+"'           # 接続情報が記入済み
+  # --- 認証情報 ---
+  '(access_code|serial|password|passwd|secret|token|api_key) *= *"[^"]+"'   # 記入済みの接続情報・秘密
+  '[?&](ticket|token|access_token|refresh_token|code)=[A-Za-z0-9._%-]{8,}'  # URL に付いたログイン用の値
+  'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'                 # GitHub のトークン
+  'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.'                             # JWT
+  'Bearer [A-Za-z0-9._-]{20,}'
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  # --- この環境や持ち主を特定する値 ---
+  '3DP-[0-9A-Z]{3}-[0-9]{3}'                                                # プリンタ名
+  '(device_name|ip) *= *"[^"]+"'
   '(^|[^0-9.])(10|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}(\.[0-9]{1,3})?([^0-9.]|$)'  # LAN 内の IP
-  '/home/[a-z][a-z0-9_-]*/'                                   # ホームディレクトリの絶対パス
-  '[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(\.[A-Za-z]{2,})+'  # メールアドレス
+  '/home/[a-z][a-z0-9_-]*/'                                                 # ホームディレクトリの絶対パス
+  'user_[0-9]{6,}'                                                          # Bambu のアカウント名
+  '[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(\.[A-Za-z]{2,})+'             # メールアドレス
 )
 ALLOWED='noreply@anthropic\.com|@example\.(com|org)|@users\.noreply\.github\.com'
 
@@ -25,7 +34,9 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     hits=$(printf '%s\n' "$added" | grep -E -- "$pattern" | grep -v -E "$ALLOWED" || true)
     if [ -n "$hits" ]; then
       found=1
-      printf '公開してはいけない可能性のある内容:\n%s\n\n' "$(printf '%s\n' "$hits" | cut -c1-160 | head -5)" >&2
+      # 値そのものは最後まで表示しない (ログに残さないため)
+      printf '公開してはいけない可能性のある内容 (%s 件):\n%s\n\n' "$(printf '%s\n' "$hits" | wc -l)" \
+        "$(printf '%s\n' "$hits" | cut -c1-40 | sed 's/$/…/' | head -5)" >&2
     fi
   done
 done
