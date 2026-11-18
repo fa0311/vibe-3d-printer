@@ -56,6 +56,7 @@ def _build(part: str):
     stls = [p.stl for p in built.pieces]
     render.hero(stls, built.out / "preview.png")
     render.sheet(stls, built.out / "views.png")
+    render.flat(stls, built.out / "flat.png", **({"color": built.preview_color} if built.preview_color else {}))
     if built.assembly_stl:
         render.hero([built.assembly_stl], built.out / "assembly.png")
     viewer.write(built.assembly_stl and [built.assembly_stl] or stls, built.out / "viewer.html", built.name)
@@ -69,6 +70,7 @@ def cmd_build(args) -> int:
     print(model.report(built))
     print(f"  画像: {built.out / 'preview.png'}")
     print(f"        {built.out / 'views.png'}")
+    print(f"        {built.out / 'flat.png'}  (真上から、陰影つき)")
     if built.assembly_stl:
         print(f"        {built.out / 'assembly.png'}")
     print(f"  3Dビューア: {built.out / 'viewer.html'}")

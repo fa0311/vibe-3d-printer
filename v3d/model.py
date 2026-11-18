@@ -47,6 +47,7 @@ class Built:
     pieces: list[Piece]
     print_settings: dict
     assembly_stl: Path | None
+    preview_color: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -181,6 +182,7 @@ def build(name: str) -> Built:
         pieces=pieces,
         print_settings=dict(getattr(mod, "PRINT", {})),
         assembly_stl=assembly_stl,
+        preview_color=getattr(mod, "PREVIEW_COLOR", None),
     )
     (out / "build.json").write_text(
         json.dumps(

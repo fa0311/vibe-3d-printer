@@ -116,6 +116,40 @@ def sheet(stls: list[Path], out: Path, size: tuple[int, int] = (1600, 1200)) -> 
     return out
 
 
+def flat(stls: list[Path], out: Path, color: str = BODY, px: int = 1100) -> Path:
+    """真上から見た「刷り上がりの絵」。左上から光を当てたときの陰影を付ける。
+
+    薄い板に線や文字を彫る・盛るような部品は、斜めから見た絵よりこちらの方が読み取りやすい。
+    真上から見た奥行き (高さの地図) を取り出して、trace.shaded で陰影を計算している。
+    """
+    import cv2
+
+    from . import trace
+
+    meshes = layout(stls)
+    pl = pv.Plotter(off_screen=True, window_size=[px, px])
+    for m in meshes:
+        pl.add_mesh(m, color="white", lighting=False)
+    pl.enable_parallel_projection()
+    _aim(pl, (0, 0, 1), up=(0, 1, 0), zoom=1.0)
+    pl.show(auto_close=False)                                # 奥行きを読むには一度描画が要る
+    depth = -pl.get_image_depth(fill_value=np.nan)          # カメラからの距離 (mm)
+    mm_per_px = 2 * pl.camera.parallel_scale / px
+    pl.close()
+
+    top = max(m.bounds[5] for m in meshes)
+    height = np.nan_to_num(top - (depth - np.nanmin(depth)), nan=0.0)
+    height[height < 1e-3] = 0.0
+    rgb = pv.Color(color).int_rgb
+    image = trace.shaded(height, mm_per_px, color_bgr=rgb[::-1])
+
+    ys, xs = np.nonzero(height > 0)
+    margin = int(3 / mm_per_px)
+    image = image[max(ys.min() - margin, 0):ys.max() + margin, max(xs.min() - margin, 0):xs.max() + margin]
+    cv2.imwrite(str(out), image)
+    return out
+
+
 def thumbnail(stls: list[Path], out: Path, px: int) -> Path:
     """.gcode.3mf に埋め込むサムネイル (背景透過・正方形)。"""
     pl = pv.Plotter(off_screen=True, window_size=[px, px])
