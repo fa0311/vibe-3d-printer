@@ -1,22 +1,29 @@
 """はめあい・穴径の補正値。パーツはここの値を使い、数値を直書きしない。
 
-FDM は「穴は小さく、外形はわずかに大きく」出る。下の値は A1 mini + PLA の一般的な出発点で、
-`parts/fit-test` を印刷して実測したら CALIBRATED を True にして値を更新する
-(手順と記録は parts/fit-test/README.md)。
+この A1 mini (0.4 mm ノズル) + Bambu PLA Basic + 0.20mm Standard で `parts/fit-test` を印刷して
+確かめた値 (2026-11-18)。測定の詳細と読み方は parts/fit-test/README.md。
+
+分かったこと:
+- 平らな面どうしのはめあいは非常に正確。10 mm 角のペグが、片側 0.05 mm の角穴に「軽く押して入り、
+  落ちない」、片側 0.10 mm の角穴に「すっと入り、自重で落ちる」。
+- 丸穴は直径で 0.3〜0.5 mm 小さく出る (呼び 3〜8 mm で一様)。ただし測ったのは 0.1 mm 表示の
+  ノギスの内側ジョウなので、±0.1 mm 程度のあいまいさがある。
 """
 
 from __future__ import annotations
 
-CALIBRATED = False
+CALIBRATED = True
 
-# --- 穴 ---
-HOLE_COMP = 0.20      # 丸穴の直径に足す量。垂直(Z軸方向)の穴向け
+# --- 丸穴 ---
+# 実測の縮みは平均 0.44 mm。内側ジョウは小さめに読みやすいので、その分を引いた値にしている。
+# 穴のある部品を最初に作ったとき、実物のねじや軸で合い具合を確かめて見直すこと。
+HOLE_COMP = 0.35      # 丸穴の直径に足す量。垂直 (Z 軸方向) の穴向け
 
-# --- 2部品のすき間 (片側あたり) ---
-CLEAR_PRESS = 0.05    # 圧入: 叩き込む / 外れない
-CLEAR_SNUG = 0.10     # しっくり: 手で押し込める、ガタなし
-CLEAR_SLIDE = 0.20    # すべり: 抜き差しする蓋・引き出し
-CLEAR_LOOSE = 0.35    # ゆるい: 確実に入ればよい
+# --- 平らな面どうしのすき間 (片側あたり) ---
+CLEAR_PRESS = 0.00    # 圧入: 叩き込む / 外れない (未実測。0.05 より詰めた推定値)
+CLEAR_SNUG = 0.05     # しっくり: 軽く押して入り、逆さにしても落ちない (実測)
+CLEAR_SLIDE = 0.10    # すべり: すっと入り、自重で抜ける。蓋・引き出し向け (実測)
+CLEAR_LOOSE = 0.20    # ゆるい: 確実に入ればよい (0.15 以上は実測で「ゆるい」側)
 
 # --- 印刷の都合 ---
 NOZZLE = 0.4
@@ -47,7 +54,7 @@ def screw(size: str) -> dict[str, float]:
     return {
         "through": through + HOLE_COMP,          # 通し穴の直径
         "tap": tap + HOLE_COMP,                  # 樹脂に直接ねじ込む下穴の直径
-        "head_d": head_d + 2 * CLEAR_LOOSE,      # 頭を沈めるザグリの直径
+        "head_d": head_d + HOLE_COMP + 0.3,      # 頭を沈めるザグリの直径 (これも丸穴なので縮む)
         "head_h": head_h + 0.2,                  # ザグリの深さ
         "nut_af": nut_af + 2 * CLEAR_SNUG,       # ナットポケットの二面幅
         "nut_h": nut_h + 0.3,                    # ナットポケットの深さ

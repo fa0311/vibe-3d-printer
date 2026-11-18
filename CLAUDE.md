@@ -54,8 +54,10 @@ uv run pytest                              LAN 直結用コードの通信テス
 - `PRINT = {...}` でスライス設定を指定できる (キーは `v3d/slicer.py` の冒頭を参照)。
   例: `{"process": "0.16mm Optimal", "settings": {"enable_support": 1, "brim_type": "outer_only"}}`
 - 複数ピースを組んだ状態を見せたいときは `assembly()` を書くと `out/assembly.png` が出る。
-- すき間・穴径・ねじ寸法は `v3d/fit.py` の値を使う (数値を直書きしない)。
-  `fit.CALIBRATED` が False の間は実測前の一般値。`parts/fit-test` の結果で更新する。
+- すき間・穴径・ねじ寸法は `v3d/fit.py` の値を使う (数値を直書きしない)。値は `parts/fit-test` を
+  この機体で印刷して実測したもの (2026-11-18)。印刷物の合い具合を聞くたびに、ずれていれば直す。
+- 実物 (ノギスで測った相手) に被せる穴や溝は「実測値 + 2 × `fit.CLEAR_SLIDE`」を出発点にする。
+  持ち主のノギスは 0.1 mm 表示なので、0.1 mm 未満の差を測定値に求めない。合い具合で詰める。
 
 ## A1 mini 向けの設計の決まり
 
