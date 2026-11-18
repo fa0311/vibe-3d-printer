@@ -33,6 +33,7 @@ if [ ! -f "$BS_DIR/.version" ] || [ "$(cat "$BS_DIR/.version")" != "$BS_VERSION"
 fi
 
 cd "$REPO"
+git config core.hooksPath scripts/hooks   # push 前に個人・機器の情報が混ざっていないか調べる
 uv sync
 uv run python -c "from v3d import profiles; print('プリセット展開:', profiles.write_all())"
 echo "準備完了。 uv run python -m v3d slice fit-test で動作確認できます。"

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# 公開リポジトリに、持ち主や機器に結びつく情報を push しないための歯止め。
+# これから push されるコミットの「追加された行」と件名を調べ、見つかったら push を止める。
+# 有効化: git config core.hooksPath scripts/hooks  (scripts/setup.sh が設定する)
+set -euo pipefail
+
+PATTERNS=(
+  '3DP-[0-9A-Z]{3}-[0-9]{3}'                                  # プリンタ名
+  'user_[0-9]{6,}'                                            # Bambu のアカウント名
+  '(access_code|serial|device_name|ip) *= *"[^"]+"'           # 接続情報が記入済み
+  '(^|[^0-9.])(10|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}(\.[0-9]{1,3})?([^0-9.]|$)'  # LAN 内の IP
+  '/home/[a-z][a-z0-9_-]*/'                                   # ホームディレクトリの絶対パス
+  '[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(\.[A-Za-z]{2,})+'  # メールアドレス
+)
+ALLOWED='noreply@anthropic\.com|@example\.(com|org)|@users\.noreply\.github\.com'
+
+zero=0000000000000000000000000000000000000000
+found=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  added=$(git log -p --no-color --format='commit %h %s%n%b' "$range" -- . ':(exclude)uv.lock' \
+    | grep -E '^(\+[^+]|commit |[^-+@ d])' || true)
+  for pattern in "${PATTERNS[@]}"; do
+    hits=$(printf '%s\n' "$added" | grep -E -- "$pattern" | grep -v -E "$ALLOWED" || true)
+    if [ -n "$hits" ]; then
+      found=1
+      printf '公開してはいけない可能性のある内容:\n%s\n\n' "$(printf '%s\n' "$hits" | cut -c1-160 | head -5)" >&2
+    fi
+  done
+done
+
+if [ "$found" -ne 0 ]; then
+  echo "push を中止しました。該当箇所を直して (履歴に入っているならコミットを作り直して) からやり直すこと。" >&2
+  exit 1
+fi
