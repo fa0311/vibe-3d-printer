@@ -1,0 +1,150 @@
+# vibe-3d-printer
+
+持ち主は Bambu Lab A1 mini を持っているが、モデリングはできないし覚える気もない。
+**形を考えるところから印刷を始めるところまで、すべて Claude がやる** ためのリポジトリ。
+持ち主にできること・やってもらうことは次の3つだけ:
+
+1. 欲しい物を言葉 (や写真) で伝える
+2. ノギスで測る (何をどう測るかは Claude が具体的に指示する)
+3. プリンタの前での作業 (ベッドを空にする、フィラメントを入れる、出来た物を試す)
+
+会話は日本語。CAD やスライサーの用語は使わず、使うなら一言で説明する。
+設計上の判断 (肉厚、向き、サポート、充填率など) は Claude が決めて、理由を一言添える。
+持ち主に聞くのは、使い方・好み・実測値など本人にしか分からないことだけ。
+
+## 1個の物を作る流れ
+
+1. **聞く** — 何に使うか、どこに付くか、力がかかるか、屋外や高温で使うか。
+2. **測ってもらう** — 必要な寸法を番号付きで列挙する。「どこを」「ノギスのどの部分で
+   (外側ジョウ / 内側ジョウ / デプスバー)」まで書く。相手の物に合わせる寸法は2〜3回測ってもらう。
+3. **モデルを書く** — `uv run python -m v3d new <名前>` で雛形を作り、`parts/<名前>/part.py` に
+   build123d で書く。寸法は冒頭の定数にまとめ、実測値とその出どころは `README.md` に残す。
+4. **自分で確かめる** — `v3d build <名前>` を実行し、**`out/views.png` を必ず自分の目で見る**。
+   ✗ (問題) は必ず直す。! (警告) は直すか、問題ない理由を説明できる状態にする。
+5. **見せる** — `out/preview.png` を返信に貼り、`out/viewer.html` を `html_render` で表示する
+   (回して見られる)。主要な寸法を文章でも伝え、形の OK をもらう。
+6. **スライス** — `v3d slice <名前>`。印刷時間とフィラメント量を伝える。
+7. **印刷** — 下の「印刷を始める前に」を満たしてから「印刷を送る」の手順で送信する。
+8. **結果を聞いて直す** — 合い具合を聞き、`README.md` の「印刷の記録」に日付・設定・結果を書く。
+   直すときは定数を変えて 4 からやり直す。
+
+## コマンド (リポジトリのルートで実行)
+
+```
+uv run python -m v3d new <名前>            雛形を作る
+uv run python -m v3d build <名前>          モデル生成 + 検査 + 画像 (out/ に出力)
+uv run python -m v3d slice <名前>          build してスライス → out/<名前>.gcode.3mf
+uv run python -m v3d profiles process      使える積層設定の一覧 (filament も同様)
+scripts/studio-gui.sh open <ファイル>      純正 Bambu Studio で開く (印刷の送信に使う。下記)
+scripts/studio-gui.sh shot|click|key ...   その画面を撮る / 操作する
+uv run pytest                              LAN 直結用コードの通信テスト (模擬プリンタ)
+```
+
+新しいマシンでは最初に `scripts/setup.sh` (Bambu Studio の取得とプリセット展開)。
+
+## part.py の約束
+
+- `build()` は形状1個、または `{"ピース名": 形状}` を返す。**印刷する向きで作る** (Z+ が上)。
+  位置は自動で「XY 中央・底面 Z=0」に直されるので気にしなくてよい。
+- `PRINT = {...}` でスライス設定を指定できる (キーは `v3d/slicer.py` の冒頭を参照)。
+  例: `{"process": "0.16mm Optimal", "settings": {"enable_support": 1, "brim_type": "outer_only"}}`
+- 複数ピースを組んだ状態を見せたいときは `assembly()` を書くと `out/assembly.png` が出る。
+- すき間・穴径・ねじ寸法は `v3d/fit.py` の値を使う (数値を直書きしない)。
+  `fit.CALIBRATED` が False の間は実測前の一般値。`parts/fit-test` の結果で更新する。
+
+## A1 mini 向けの設計の決まり
+
+- 造形範囲は 180 × 180 × 180 mm。超えるなら分割して、はめ込みかねじで組む。
+- サポートは「付けずに済む形」を先に考える: 向きを変える、張り出しは 45° までの面取りにする、
+  橋渡し (両端が支えられた水平の天井) は 20 mm 程度まで。どうしても要るときだけ `enable_support`。
+- 強度は積層方向に弱い。力のかかるツメ・フック・軸は、層が力の向きに沿うように寝かせる。
+- 壁は 1.2 mm 以上 (力がかかるなら 2 mm 以上)。ねじ周りは穴の直径と同じだけ肉を残す。
+- 底面の外周は丸め (fillet) ではなく面取り (chamfer)。丸めは1層目が宙に浮いて荒れる。
+- 精度の要る穴は Z 方向 (垂直) に向ける。横向きの穴は上側が垂れるので涙滴形か面取りにする。
+- 文字は彫り込み (深さ 0.4 mm 以上、高さ 4 mm 以上)。
+- 既定は PLA・0.20 mm。屋外や車内など熱がかかる場所は PETG を提案する
+  (その時はフィラメントの有無を確認)。
+
+## 印刷を始める前に (毎回)
+
+印刷は現実の機械を動かす。**その印刷について会話の中で持ち主の「印刷して」をもらってから** 送信する。
+過去の印刷への許可は使い回さない。送信前に次を本人に確認する:
+
+- ベッドの上に前の造形物が残っていない / プレート (Textured PEI) が載っている
+- 使うフィラメントが装填されている (スライスした種類と同じ)
+
+## 印刷を送る (クラウド経由)
+
+持ち主は Bambu Handy を使い続けたいので、プリンタはクラウド接続のまま。クラウド接続のプリンタは
+純正ソフト以外からの印刷開始を受け付けない (2025年からの仕様)。そこで **純正 Bambu Studio を
+専用の仮想画面 (:99, 1600×1000) で動かし、その画面を Claude が操作して送信する**。
+画面は `shot` で撮って Read で見る。**クリックの前に必ず最新の画面を見て、押す場所を確かめる**
+(下の座標は Bambu Studio 02.09.01.70 での実績値。警告が出たり AMS が付くと位置がずれる)。
+
+1. `uv run python -m v3d slice <名前>`
+2. `scripts/studio-gui.sh open "$PWD/parts/<名前>/out/<名前>.gcode.3mf"` → `shot`
+   - タイトルが `<名前>.gcode`、Preview タブ、右上の Print plate が緑。
+   - Slicing Result の時間・重さが slice の報告と合っている。
+   - 左上が Login/Register になっていたらログインが切れている (下の「ログイン」)。
+3. `click 1538 72` (Print plate) → 数秒待って `shot`。「Send print job」ダイアログで確認:
+   - Printer が `printer.local.toml` の `[cloud] device_name` と同じ名前 / Bambu Lab A1 mini 0.4mm、
+     プレートが Textured PEI
+   - Filament の種類がスライスと同じで、行き先が Ext (外部スプール。AMS は付いていない)
+   - Timelapse は Off にする (`click 763 675`)。Auto Bed Leveling と Flow Dynamics Calibration は On
+4. 持ち主の「印刷して」を確認済みなら `click 1076 793` (Send) → 10 秒ほど待って `shot`。
+   エラーのダイアログが出ていないこと。
+5. `click 432 72` (Device タブ) → `shot`。状態とジョブ名で、印刷が始まったことを確かめて報告する。
+   進み具合を聞かれたら、同じく Device タブを撮って読む。
+
+Device タブの Control (軸移動・温度・Load/Unload)、カメラ、停止ボタンは、持ち主に頼まれたときだけ触る。
+
+実績: 2026-11-18 にこの手順で `fit-test` を送信し、印刷が始まるところまで確認した。
+
+### ログイン (切れたとき)
+
+Bambu アカウントが Google ログインの場合の手順。Google の認証情報は Claude が預からない:
+
+1. `scripts/studio-gui.sh open` → 左上の Login/Register を押す → ダイアログの Google ボタンを押す
+   (これで Bambu Studio が `localhost:13618` で結果を待ち受ける。`ss -ltn | grep 13618` で確認)。
+2. 持ち主の Kasm デスクトップ (:1) の Chrome で Bambu のログインページを開く:
+   `DISPLAY=:1 /usr/bin/google-chrome "<下の URL>"` → 持ち主が自分でログインする。
+   完了すると `~/.config/BambuStudio/user/` に数字のフォルダができ、画面左上がユーザー名になる。
+3. **終わったら Chrome に Google のログインを残さない** (持ち主の希望):
+   `DISPLAY=:1 /usr/bin/google-chrome "https://accounts.google.com/Logout"` → Chrome を閉じる →
+   `~/.config/google-chrome` と `~/.cache/google-chrome` を消す。消す前に、そのプロファイルに
+   今回のログイン以外のものが入っていないか持ち主に一言確認する。
+4. ログイン後に出る「Synchronization (プリセットをクラウドと同期するか)」は No。
+
+```
+https://bambulab.com/api/v1/user-service/user/tplogin?source=google&from=slicer&callback=https%3A%2F%2Fbambulab.com%2Fapi%2Fauth%2Fcallback%3FopenBy%3Dstudio%26from%3Dstudio%26source%3Dgoogle%26locale%3Den%26redirect_url%3Dhttp%253A%252F%252Flocalhost%253A13618%26slicerLoginType%3Dticket&consentBody=%7B%22version%22%3A1%2C%22scene%22%3A%22register_or_login%22%2C%22formList%22%3A%5B%7B%22formId%22%3A%22AccountTerms%22%2C%22op%22%3A%22Opt-in%22%7D%2C%7B%22formId%22%3A%22PrivacyPolicy%22%2C%22op%22%3A%22Opt-in%22%7D%5D%7D
+```
+
+Bambu Studio 自体のログイン (Bambu のトークン。Google の情報ではない) は `~/.config/BambuStudio/` に残る。
+持ち主に「ログアウトして」と言われたら、Bambu Studio の左上のユーザー名から Logout する。
+
+### LAN 直結という別経路 (今は使っていない)
+
+`v3d status|print|pause|resume|stop` (`v3d/printer.py`) は MQTT 8883 + FTPS 990 でプリンタに直接送る。
+使うにはプリンタ本体で LAN Only Mode + Developer Mode を ON にする必要があり、その間は Bambu Handy と
+クラウドが使えなくなるので、持ち主は選ばなかった。模擬プリンタ (`tests/fake_printer.py`) でしか
+試していない。接続情報は `printer.local.toml` の `[connection]` (雛形は `printer.local.example.toml`)。
+
+## スライサーまわりで知っておくこと
+
+- スライスは Bambu Studio の CLI (`~/.local/opt/bambustudio/squashfs-root/AppRun`)。
+- **CLI はプリセットの継承 (`inherits`/`include`) を解決しない。** システムプリセットの JSON を
+  そのまま渡すと、エラーも出さずに汎用の既定値 (開始Gコードが `G28` だけ、200℃、ベッド 35℃)
+  でスライスする。そのため `v3d/profiles.py` で完全展開したものを渡し、`v3d/slicer.py` の
+  `_verify` がスライス結果に機種・温度・開始Gコード・上書き値が入っているかを毎回確かめる。
+  この確認を外したり緩めたりしない。
+- この環境では CLI がサムネイルを描けないので、こちらで描いた画像を 3MF に埋めている。
+- Bambu Studio を更新したら `scripts/setup.sh` のバージョンを上げて再実行する。
+
+## git
+
+- **このリポジトリは GitHub で公開している。** 秘密や、持ち主・機器に結びつく情報をファイルにも
+  コミットメッセージにも書かない: アクセスコード、シリアル番号、プリンタ名、IP アドレス、
+  アカウント名、メールアドレス、自宅の様子が分かる写真など。そういう値は `printer.local.toml` へ。
+- `parts/*/out/` (生成物) と `printer.local.toml` はコミットしない。
+- コミットと push の頻度は Claude に任されている。区切りのよいところ (部品が1つ形になった、
+  印刷結果を記録した、道具を直した) で main にコミットして push する。
