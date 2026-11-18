@@ -1,0 +1,13 @@
+# これを printer.local.toml にコピーして記入する (git には入らない)。
+
+# クラウド経由 (純正 Bambu Studio を操作して送る) で使う。送信先の取り違えを防ぐための照合用。
+[cloud]
+device_name = ""    # Bambu Studio / Bambu Handy に表示されるプリンタの名前
+
+# LAN 直結 (v3d print) を使うときだけ必要。値はプリンタ本体の画面で確認できる:
+#   ip / access_code : 設定 > LAN Only Mode (または WLAN) の画面
+#   serial           : 設定 > デバイス情報
+[connection]
+ip = ""
+serial = ""
+access_code = ""
