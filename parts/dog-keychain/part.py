@@ -16,9 +16,11 @@ from v3d import fit, trace
 SOURCE = Path(__file__).with_name("source.png")     # 500×500 px、背景は透明
 PREVIEW_COLOR = "#d9b77e"     # 確認用の絵の色 (髪の色に寄せた仮の色)
 
-# 瞳の描き方: "solid" (まるごとくぼませて、白い光だけ残す) / "outline" (輪郭の線だけ) /
-#             "pupil" (輪郭の線 + 真ん中の瞳)
+# 瞳の描き方: "pupil" (輪郭の線 + 真ん中の瞳) / "outline" (輪郭の線だけ) /
+#             "solid" (まるごとくぼませて、白い光だけ残す)
 EYES = "pupil"
+# ほっぺたの描き方: "lines" (斜めの短い線 3 本) / "dimple" (浅い楕円のくぼみ) / "none" (描かない)
+CHEEKS = "lines"
 
 # ---- 寸法 (mm) ----
 ICON_BOX = (149, 119, 183)    # アイコンの切り出し位置: 左上の x, y と一辺 (元の絵の画素)
@@ -33,11 +35,19 @@ RING_OUTER = 8.5      # 金具を通す輪の外径
 RING_HOLE = 3.5       # 輪の穴の仕上がり径 (ボールチェーン・二重リング用)
 RING_OVERLAP = 2.0    # 輪を板にどれだけ食い込ませるか
 
-# 瞳
-EYE_RING = 0.9        # 瞳の輪郭の溝の幅 ("outline" / "pupil")
-EYE_LASH = 0.7        # 上まつ毛の分、輪郭の上側をこれだけ太くする
-EYE_SPARK = 0.3       # 白い光を、絵よりこれだけ大きくする (小さいと刷れない)
+# 瞳。絵をなぞると輪郭がでこぼこするので、位置と大きさだけ絵から取って、楕円で描き直す
+EYE_RING = 0.9        # 瞳の輪郭の溝の幅
+EYE_LASH = 1.5        # 上まつ毛 (三日月形の溝) のいちばん太い所
+EYE_WING = 1.0        # 上まつ毛の両端を、瞳の幅よりこれだけ外へ出す
+EYE_PUPIL = (0.33, 0.52)      # 真ん中の瞳の大きさ (瞳全体の幅・高さに対する割合)
+EYE_SPARK = (0.9, 0.65)       # 白い光 (楕円) の半径: 横, 縦
 LASH_ZONE = 4.0       # 瞳のふちからこの距離 (元の絵の画素) までの細いまつ毛は描かない
+
+# ほっぺた
+CHEEK_LINE = (0.8, 2.8)       # 斜めの線の幅と長さ
+CHEEK_PITCH = 1.7     # 線と線の間隔
+CHEEK_SLANT = 65      # 線の傾き (度。90 で垂直)
+CHEEK_DEPTH = 0.4     # 浅いくぼみの深さ ("dimple")
 
 # ---- 絵の読み取り ----
 UPSAMPLE = 8          # 輪郭を滑らかにするため、拡大してから処理する
@@ -91,48 +101,98 @@ def _trace(bgr, sil, up):
     gray = _mask(((s < 60) & (v < 205)) | (v < 80)) & sil
     cores = trace.components(trace.drop_thin(gray, 2.5 * up))[:2]
     assert len(cores) == 2, "瞳が 2 つ見つからない"
-    eyes, sparks = [], []
+    eyes = []
     for core in cores:
         zone = trace.grow(core, 6 * up)
         blob = trace.fill_holes(trace.close_gaps((gray | lines) & zone, 1.5 * up))
-        blob = trace.drop_thin(blob & trace.shrink(zone, 1.5 * up), 2.5 * up)
-        eye = trace.components(blob)[0]
-        eyes.append(eye)
-        # 白い光 = 瞳の内側の白い塊のうち、いちばん大きいもの (下の細い三日月やふちの肌色は除く)
-        white = trace.drop_thin(_mask(v > 225) & trace.shrink(eye, 2 * up), 1.2 * up)
-        sparks.append(trace.components(white)[:1])
-    return {"lines": lines, "eyes": eyes, "sparks": sparks}
+        blob = trace.components(trace.drop_thin(blob & trace.shrink(zone, 1.5 * up), 2.5 * up))[0]
+        # まつ毛の両端を落とした丸い部分の外接四角から、瞳の中心と半径 (横, 縦) を取る
+        ys, xs = np.nonzero(trace.components(trace.drop_thin(blob, 4.5 * up))[0])
+        eyes.append({
+            "blob": blob,
+            "center": ((xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2),
+            "radius": ((xs.max() - xs.min()) / 2, (ys.max() - ys.min()) / 2),
+        })
+
+    # ほっぺた = 肌より赤みの強い所 (線は無く、ぼかした桃色の楕円)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(int)
+    skin = (s < 45) & (v > 235)
+    pink = _mask((lab[..., 1] - np.median(lab[..., 1][skin]) > 9) & (lab[..., 0] > 200) & (lab[..., 2] < 150))
+    cheeks = []
+    for blob in trace.components(trace.drop_thin(pink, 2 * up))[:2]:
+        ys, xs = np.nonzero(blob)
+        cheeks.append({
+            "center": ((xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2),
+            "radius": ((xs.max() - xs.min()) / 2, (ys.max() - ys.min()) / 2),
+        })
+    assert len(cheeks) == 2, "ほっぺたが 2 つ見つからない"
+    return {"lines": lines, "eyes": eyes, "cheeks": cheeks}
+
+
+def _ellipse(shape, center, radius):
+    out = np.zeros(shape, np.uint8)
+    cv2.ellipse(out, (int(round(center[0])), int(round(center[1]))),
+                (max(int(round(radius[0])), 1), max(int(round(radius[1])), 1)), 0, 0, 360, 255, cv2.FILLED)
+    return out
 
 
 def _eyes(traced, mm):
-    """瞳の溝と、瞳の領域を返す。描き方は EYES で選ぶ。"""
+    """瞳の溝と、瞳の領域 (なぞった線を消す範囲) を返す。描き方は EYES で選ぶ。
+
+    位置は絵のとおり、大きさは左右の平均。形は楕円で描き直す:
+    外周の輪、その上にかぶさる三日月形の上まつ毛、上まつ毛からぶら下がる縦長の瞳、瞳の右上を欠く白い光。
+    瞳を細くしてあるのは、広いくぼみだと底まで光が届いて黒く見えないから (暗く見えるのは狭い溝だけ)。
+    """
     px = 1 / mm
-    groove = np.zeros_like(traced["eyes"][0])
-    area = np.zeros_like(groove)
-    for eye, spark in zip(traced["eyes"], traced["sparks"]):
-        eye = trace.smooth(trace.grow(eye, 0.25 * px), 0.2 * px)
-        light = np.zeros_like(eye)
-        for piece in spark:
-            light |= trace.smooth(trace.grow(piece, EYE_SPARK * px), 0.1 * px)
+    shape = traced["eyes"][0]["blob"].shape
+    a = np.mean([e["radius"][0] for e in traced["eyes"]])
+    b = np.mean([e["radius"][1] for e in traced["eyes"]])
+    groove = np.zeros(shape, np.uint8)
+    area = np.zeros(shape, np.uint8)
+    for e in traced["eyes"]:
+        cx, cy = e["center"]
+        outer = _ellipse(shape, (cx, cy), (a, b))
+        lash_radius = (a + EYE_WING * px, 0.55 * b)
+        lash_y = cy - b + lash_radius[1]
+        lash = _ellipse(shape, (cx, lash_y), lash_radius) & ~_ellipse(shape, (cx, lash_y + EYE_LASH * px), lash_radius)
+        pupil_radius = (EYE_PUPIL[0] * a, EYE_PUPIL[1] * b)
+        pupil_center = (cx, cy - 0.2 * b)
+        spark = _ellipse(shape, (pupil_center[0] + 0.8 * pupil_radius[0], pupil_center[1] - 0.4 * pupil_radius[1]),
+                         (EYE_SPARK[0] * px, EYE_SPARK[1] * px))
         if EYES == "solid":
-            g = eye & ~light
+            g = (outer | lash) & ~spark
         elif EYES in ("outline", "pupil"):
-            inner = trace.shrink(eye, EYE_RING * px)
-            inner &= np.roll(inner, int(EYE_LASH * px), axis=0)      # 上はまつ毛の分だけ太い溝にする
-            g = eye & ~inner
+            g = (outer & ~_ellipse(shape, (cx, cy), (a - EYE_RING * px, b - EYE_RING * px))) | lash
             if EYES == "pupil":
-                # 瞳は、上まつ毛からぶら下がる縦長の丸。幅を狭くして、溝として暗く見えるようにする
-                ys, xs = np.nonzero(inner)
-                a, b = 0.24 * (xs.max() - xs.min()), 0.40 * (ys.max() - ys.min())
-                center = (int((xs.min() + xs.max()) / 2), int(ys.min() + b - 0.3 * px))
-                pupil = np.zeros_like(eye)
-                cv2.ellipse(pupil, center, (int(a), int(b)), 0, 0, 360, 255, cv2.FILLED)
-                g |= pupil & eye & ~light
+                g |= _ellipse(shape, pupil_center, pupil_radius) & ~spark
         else:
             raise ValueError(f"EYES が不正: {EYES}")
         groove |= g
-        area |= eye
+        area |= outer | lash | e["blob"]
     return groove, area
+
+
+def _cheeks(traced, mm):
+    """ほっぺたの (溝, 浅いくぼみ) を返す。描き方は CHEEKS で選ぶ。"""
+    px = 1 / mm
+    shape = traced["eyes"][0]["blob"].shape
+    groove = np.zeros(shape, np.uint8)
+    dimple = np.zeros(shape, np.uint8)
+    for cheek in traced["cheeks"]:
+        cx, cy = cheek["center"]
+        if CHEEKS == "lines":
+            width, length = CHEEK_LINE
+            dx = np.cos(np.radians(CHEEK_SLANT)) * (length - width) / 2 * px
+            dy = np.sin(np.radians(CHEEK_SLANT)) * (length - width) / 2 * px
+            for k in (-1, 0, 1):
+                x = cx + k * CHEEK_PITCH * px
+                cv2.line(groove, (int(round(x - dx)), int(round(cy + dy))), (int(round(x + dx)), int(round(cy - dy))),
+                         255, int(round(width * px)), cv2.LINE_8)
+        elif CHEEKS == "dimple":
+            dimple |= _ellipse(shape, (cx, cy), cheek["radius"])
+        elif CHEEKS != "none":
+            raise ValueError(f"CHEEKS が不正: {CHEEKS}")
+    return groove, dimple
 
 
 def _merge_small_islands(groove, mm, min_island):
@@ -162,19 +222,19 @@ def _layout():
     traced = _trace(bgr, sil, up)
 
     lines = traced["lines"]
-    for eye in traced["eyes"]:
-        lines &= ~trace.grow(eye, LASH_ZONE * up)      # 細いまつ毛は、太らせるとつぶれて汚れになる
+    eye_groove, eye_area = _eyes(traced, mm)
+    lines &= ~trace.grow(eye_area, LASH_ZONE * up)     # 細いまつ毛は、太らせるとつぶれて汚れになる
     lines = _keep_big(lines, 30 * up * up)             # 髪の白い光のふちなど、線でない粒を捨てる
     groove = trace.smooth(trace.thicken_evenly(trace.smooth(lines, 0.1 * px), MIN_LINE * px), 0.15 * px)
     groove = trace.smooth(trace.close_gaps(groove, MIN_WEB / 2 * px), 0.08 * px)
     groove = _merge_small_islands(groove, mm, MIN_ISLAND)
-    eye_groove, eye_area = _eyes(traced, mm)
-    groove = (groove & ~trace.grow(eye_area, 0.1 * px)) | eye_groove
+    cheek_groove, dimple = _cheeks(traced, mm)
+    groove = (groove & ~trace.grow(eye_area, 0.1 * px)) | eye_groove | cheek_groove
 
     art = np.zeros_like(groove)
     cv2.circle(art, (n // 2, n // 2), side * up // 2, 255, cv2.FILLED)      # 丸で切り出す (四隅は切れる)
     pad = int(round(PAD_MM * px))
-    art, groove = (np.pad(m, pad) for m in (art, groove & art))
+    art, groove, dimple = (np.pad(m, pad) for m in (art, groove & art, dimple & art))
     plate, ring = _add_ring(trace.grow(art, RIM * px), mm, art.shape[1] // 2)
 
     # 角だけで触れ合う所があると立体が壊れるので、最後に輪郭をならす
@@ -185,7 +245,8 @@ def _layout():
     return {
         "plate": plate,
         "groove": groove,
-        "top": plate & ~groove,            # 板の表面まである所
+        "dimple": dimple & ~groove,        # 浅くくぼませる所 (ほっぺた)
+        "top": plate & ~groove & ~dimple,  # 板の表面まである所
         "mm": mm,
         "center": center,
         "ring": ((ring[0] - center[0]) * mm, (center[1] - ring[1]) * mm),
@@ -201,5 +262,7 @@ def build():
     """絵の面を上にして寝かせて刷る (裏は平ら)。"""
     L = _layout()
     part = _prism(L["plate"], L, 0, FLOOR) + _prism(L["top"], L, FLOOR, THICK)
+    if L["dimple"].any():
+        part += _prism(L["dimple"], L, FLOOR, THICK - CHEEK_DEPTH)
     hole = Cylinder(fit.hole(RING_HOLE) / 2, THICK, align=(Align.CENTER, Align.CENTER, Align.MIN))
     return part - hole.move(Location((*L["ring"], 0)))
