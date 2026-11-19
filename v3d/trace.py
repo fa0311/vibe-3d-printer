@@ -82,6 +82,23 @@ def thicken_thin_lines(lines: np.ndarray, min_width_px: float) -> np.ndarray:
     return cv2.bitwise_or(lines, grow(strokes, min_width_px / 4))
 
 
+def line_width(lines: np.ndarray) -> float:
+    """線の太さの中央値 (px)。線の芯 (縁からいちばん遠い所) での太さを集めて測る。"""
+    depth = cv2.distanceTransform(lines, cv2.DIST_L2, 5)
+    core = (depth > 0) & (depth >= cv2.dilate(depth, np.ones((3, 3), np.uint8)) - 1e-6)
+    return 2 * float(np.median(depth[core]))
+
+
+def thicken_evenly(lines: np.ndarray, min_width_px: float) -> np.ndarray:
+    """線全体を同じだけ太らせて、太さの中央値を min_width に届かせる。
+
+    太さのそろった線画向き。thicken_thin_lines は細い線だけを選んで太らせるので、
+    全部の線が細い絵に使うと、線の交わる所や先端だけ太ってこぶになる。
+    """
+    extra = (min_width_px - line_width(lines)) / 2
+    return grow(lines, extra) if extra >= 0.5 else lines
+
+
 def faces(mask: np.ndarray, mm_per_px: float, center_px: tuple[float, float], detail_mm: float = 0.04):
     """マスクの輪郭を build123d の面にする。画像は Y が下向きなので上下を反転する。"""
     from build123d import Face, Wire

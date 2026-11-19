@@ -79,7 +79,9 @@ uv run pytest                              LAN 直結用コードの通信テス
 - 文字は彫り込み (深さ 0.4 mm 以上、高さ 4 mm 以上)。
 - 絵やロゴを 1 色で刷るときは、色の代わりに深さで描き分ける。線は盛るより深く彫る方が影で濃く見える。
   線を完全に抜く (ステンシル) と細い橋だけでつながりやすいので、底に 0.4 mm の薄皮を残す。
-  絵から輪郭を起こす道具は `v3d/trace.py` (使用例: `parts/cat-keychain`)。
+  色つきの絵でも、描くのは黒い線だけでよい。色の塗り分けを段差で再現する案は、持ち主に
+  「いらない」と言われた (`parts/hood-keychain`)。最初から線だけの案で、板の形を選んでもらう。
+  絵から輪郭を起こす道具は `v3d/trace.py` (使用例: `parts/cat-keychain`、`parts/hood-keychain`)。
 - 既定は PLA・0.20 mm。屋外や車内など熱がかかる場所は PETG を提案する
   (その時はフィラメントの有無を確認)。
 
@@ -104,11 +106,14 @@ uv run pytest                              LAN 直結用コードの通信テス
    - タイトルが `<名前>.gcode`、Preview タブ、右上の Print plate が緑。
    - Slicing Result の時間・重さが slice の報告と合っている。
    - 左上が Login/Register になっていたらログインが切れている (下の「ログイン」)。
+   - 「Configuration update」(新しいプリセットを入れるか) が出たら Cancel (`click 1096 737`)。
+     スライスは CLI と展開済みプリセットで済んでいるので、ここで入れる必要はない。
 3. `click 1538 72` (Print plate) → 数秒待って `shot`。「Send print job」ダイアログで確認:
    - Printer が `printer.local.toml` の `[cloud] device_name` と同じ名前 / Bambu Lab A1 mini 0.4mm、
      プレートが Textured PEI
    - Filament の種類がスライスと同じで、行き先が Ext (外部スプール。AMS は付いていない)
    - Timelapse は Off にする (`click 763 675`)。Auto Bed Leveling と Flow Dynamics Calibration は On
+     (この 2 つは、ダイアログがプリンタの情報を読み終えるまで数秒表示されない。出るまで待つ)
 4. 持ち主の「印刷して」を確認済みなら `click 1076 793` (Send) → 10 秒ほど待って `shot`。
    エラーのダイアログが出ていないこと。
 5. `click 432 72` (Device タブ) → `shot`。状態とジョブ名で、印刷が始まったことを確かめて報告する。
