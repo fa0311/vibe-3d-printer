@@ -2,6 +2,7 @@
 
 part.py の約束:
     def build():           -> 形状1個、または {"ピース名": 形状} (印刷する向きで作る。Z+ が上)
+                              形状は build123d の立体か、三角形の網 (trimesh.Trimesh。v3d/blob.py で作る丸い形)
     PRINT = {...}          -> スライス設定 (省略可。v3d/slicer.py 参照)
     def assembly():        -> 組み立てた状態の形状 (省略可。確認用の絵にだけ使う)
 """
@@ -29,7 +30,7 @@ _OVERHANG_MARGIN_DEG = 3.0
 class Piece:
     name: str
     stl: Path
-    step: Path
+    step: Path | None          # 三角形の網から作ったピースには STEP が無い
     size: tuple[float, float, float]
     volume_mm3: float
     bed_contact_mm2: float
@@ -66,7 +67,16 @@ def load(name: str) -> ModuleType:
     return mod
 
 
+def _is_mesh(shape) -> bool:
+    import trimesh
+
+    return isinstance(shape, trimesh.Trimesh)
+
+
 def _export(shape, stl: Path, step: Path | None = None) -> None:
+    if _is_mesh(shape):
+        shape.export(str(stl))
+        return
     from build123d import export_step, export_stl
 
     export_stl(shape, str(stl), tolerance=0.01, angular_tolerance=0.1)
@@ -76,6 +86,11 @@ def _export(shape, stl: Path, step: Path | None = None) -> None:
 
 def _seat_on_bed(shape):
     """XY は原点中心、底面は Z=0 に置く。"""
+    if _is_mesh(shape):
+        lo, hi = shape.bounds
+        seated = shape.copy()
+        seated.apply_translation((-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]))
+        return seated
     from build123d import Location
 
     bb = shape.bounding_box()
@@ -83,12 +98,23 @@ def _seat_on_bed(shape):
     return shape.moved(Location((-c.X, -c.Y, -bb.min.Z)))
 
 
+def _measure(shape) -> tuple[tuple[float, float, float], float]:
+    """(外寸, 体積 mm³)。"""
+    if _is_mesh(shape):
+        return tuple(float(v) for v in shape.extents), float(shape.volume)
+    bb = shape.bounding_box()
+    return (bb.size.X, bb.size.Y, bb.size.Z), float(shape.volume)
+
+
 def _inspect(piece: Piece, shape) -> None:
     import trimesh
 
-    if not shape.is_valid:
-        piece.problems.append("形状が壊れています (is_valid=False)")
-    solids = len(shape.solids())
+    if _is_mesh(shape):
+        solids = shape.body_count
+    else:
+        if not shape.is_valid:
+            piece.problems.append("形状が壊れています (is_valid=False)")
+        solids = len(shape.solids())
     if solids == 0:
         piece.problems.append("ソリッドがありません (面だけの形状)")
     elif solids > 1:
@@ -155,13 +181,13 @@ def build(name: str) -> Built:
     pieces = []
     for pname, shape in shapes.items():
         shape = _seat_on_bed(shape)
-        bb = shape.bounding_box()
+        size, volume = _measure(shape)
         piece = Piece(
             name=pname,
             stl=out / f"{pname}.stl",
-            step=out / f"{pname}.step",
-            size=(bb.size.X, bb.size.Y, bb.size.Z),
-            volume_mm3=float(shape.volume),
+            step=None if _is_mesh(shape) else out / f"{pname}.step",
+            size=size,
+            volume_mm3=volume,
             bed_contact_mm2=0.0,
             overhang_mm2=0.0,
             ceiling_mm2=0.0,

@@ -56,7 +56,9 @@ def _build(part: str):
     stls = [p.stl for p in built.pieces]
     render.hero(stls, built.out / "preview.png")
     render.sheet(stls, built.out / "views.png")
-    render.flat(stls, built.out / "flat.png", **({"color": built.preview_color} if built.preview_color else {}))
+    tint = {"color": built.preview_color} if built.preview_color else {}
+    render.flat(stls, built.out / "flat.png", **tint)
+    render.turnaround(stls, built.out / "turnaround.png", **tint)
     if built.assembly_stl:
         render.hero([built.assembly_stl], built.out / "assembly.png")
     viewer.write(built.assembly_stl and [built.assembly_stl] or stls, built.out / "viewer.html", built.name)
@@ -71,6 +73,7 @@ def cmd_build(args) -> int:
     print(f"  画像: {built.out / 'preview.png'}")
     print(f"        {built.out / 'views.png'}")
     print(f"        {built.out / 'flat.png'}  (真上から、陰影つき)")
+    print(f"        {built.out / 'turnaround.png'}  (正面・斜め・横・背面)")
     if built.assembly_stl:
         print(f"        {built.out / 'assembly.png'}")
     print(f"  3Dビューア: {built.out / 'viewer.html'}")
@@ -88,6 +91,12 @@ def cmd_slice(args) -> int:
         print(f"✗ {e}", file=sys.stderr)
         return 1
     print(slicer.report(sliced))
+    if sliced.settings.get("enable_support"):
+        from . import gcodeview
+
+        seg = gcodeview.segments(sliced.file)
+        print(gcodeview.report(seg))
+        print(f"    図: {gcodeview.plot(seg, built.out / 'supports.png')}  (本体と支えの位置)")
     return 0
 
 

@@ -150,6 +150,35 @@ def flat(stls: list[Path], out: Path, color: str = BODY, px: int = 1100) -> Path
     return out
 
 
+def turnaround(stls: list[Path], out: Path, color: str = BODY, size: tuple[int, int] = (2000, 760)) -> Path:
+    """正面 / 斜め前 / 横 / 背面 を並べた絵。フィギュアのような丸い立体を、設定画の三面図と見比べるためのもの。
+
+    縁取りの線は描かず、なめらかな陰影だけで形を見せる。正面は -Y から見た向き。
+    """
+    meshes = [m.compute_normals(cell_normals=False, point_normals=True, split_vertices=True, feature_angle=50)
+              for m in layout(stls)]
+    views = [("FRONT", (0, -1, 0)), ("3/4", (0.45, -1, 0.3)), ("SIDE", (-1, 0, 0)), ("BACK", (0, 1, 0))]
+    pl = pv.Plotter(off_screen=True, shape=(1, len(views)), window_size=list(size), border=False)
+    pl.set_background("white")
+    reach = max(float(np.ptp(np.asarray(m.bounds).reshape(3, 2), axis=1).max()) for m in meshes)
+    for i, (label, direction) in enumerate(views):
+        pl.subplot(0, i)
+        for m in meshes:
+            pl.add_mesh(m, color=color, smooth_shading=True, ambient=0.3, diffuse=0.7, specular=0.25, specular_power=20)
+        pl.add_text(label, position="upper_left", font_size=10, color="#555555")
+        pl.enable_parallel_projection()
+        _aim(pl, direction, zoom=1.25)
+        try:
+            # くぼみや すき間の奥を暗くする (実物で溝が影になるのに近い見え方にする)
+            pl.enable_ssao(radius=reach * 0.04, bias=reach * 0.002, kernel_size=128, blur=True)
+        except Exception:
+            pass
+    pl.enable_anti_aliasing("ssaa")
+    pl.screenshot(str(out))
+    pl.close()
+    return out
+
+
 def thumbnail(stls: list[Path], out: Path, px: int) -> Path:
     """.gcode.3mf に埋め込むサムネイル (背景透過・正方形)。"""
     pl = pv.Plotter(off_screen=True, window_size=[px, px])
