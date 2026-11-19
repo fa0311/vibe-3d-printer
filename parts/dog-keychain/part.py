@@ -39,10 +39,23 @@ RING_OVERLAP = 2.0    # 輪を板にどれだけ食い込ませるか
 
 # 瞳。絵をなぞると輪郭がでこぼこするので、位置と大きさだけ絵から取って、楕円で描き直す
 EYE_RING = 0.9        # 瞳の輪郭の溝の幅
-EYE_LASH = 1.5        # 上まつ毛 (三日月形の溝) のいちばん太い所
-EYE_WING = 1.0        # 上まつ毛の両端を、瞳の幅よりこれだけ外へ出す (LASH_ENDS = False のとき)
-LASH_ENDS = True      # True: 上まつ毛の両端 (目尻で下へ回り込む跳ね) を絵からなぞる / False: 左右対称の三日月
-LASH_MIN = 0.9        # なぞったまつ毛の最小幅 (目尻の細い跳ねを、ここまで太らせる)
+# 上まつ毛は、筆で引くように「太さの変わる線」2 本で描く: 目頭から目尻までの帯 (band) と、
+# 目尻から下へ回り込む跳ね (hook)。通る点は絵に重ねて決めた。単位は瞳の半径 (x は目尻側が正、y は下が正)、
+# 3 つ目は太さ (mm)。絵の左右の目は鏡写しではない (左は平たく、右は弓なり) ので、別々に持つ。
+# 絵をなぞる方法は輪郭がガタガタになり、左右対称の三日月 1 つでは目尻が似なかった (どちらも持ち主の指摘)。
+LASHES = (
+    {   # 絵の左の目
+        "band": [(-1.22, -0.30, 0.5), (-0.95, -0.50, 0.9), (-0.50, -0.70, 1.1), (0.00, -0.85, 1.2),
+                 (0.60, -0.90, 1.2), (1.18, -0.88, 1.0)],
+        "hook": [(1.18, -0.88, 1.0), (1.52, -0.66, 0.9), (1.72, -0.37, 0.9), (1.75, -0.12, 0.9),
+                 (1.67, 0.08, 0.85), (1.54, 0.25, 0.6)],
+    },
+    {   # 絵の右の目
+        "band": [(-1.30, -0.33, 0.5), (-1.08, -0.54, 0.9), (-0.60, -0.79, 1.1), (0.00, -0.87, 1.2),
+                 (0.50, -0.84, 1.2), (0.92, -0.67, 1.2), (1.22, -0.42, 1.1)],
+        "hook": [(1.22, -0.42, 1.1), (1.46, -0.18, 1.0), (1.52, 0.02, 0.9), (1.50, 0.20, 0.6)],
+    },
+)
 EYE_PUPIL = (0.36, 0.50)      # 真ん中の瞳の半径 (瞳全体の半径に対する割合: 横, 縦)。絵では幅の 38%
 EYE_SHADE = 0.8       # "manga": 上まつ毛の下の影の厚み (瞳の縦の半径に対する割合)
 EYE_GLINT = 1.3       # "iris": 下に残す三日月のいちばん太い所
@@ -186,18 +199,13 @@ def _eyes(traced, mm):
         outer = _ellipse(shape, (cx, cy), (a, b))
         inner_radius = (a - EYE_RING * px, b - EYE_RING * px)
         inner = _ellipse(shape, (cx, cy), inner_radius)
-        if LASH_ENDS:
-            # 絵からなぞったまつ毛の両端を、瞳の楕円に溶接する (0.6 mm より狭いすき間は埋まる)
-            joined = outer | _lash_ends(traced, outer, (cx, cy), b, px)
-            lash = trace.close_gaps(joined, 0.3 * px)
-            # てっぺんは、まつ毛と楕円の間にできる浅い切れ込みも埋めて、なめらかな 1 本の弧にする
-            top = trace.close_gaps(joined, 0.8 * px)
-            top[int(cy - 0.6 * b):] = 0
-            lash = (lash | top) & ~outer
-        else:
-            lash_radius = (a + EYE_WING * px, 0.55 * b)
-            lash_y = cy - b + lash_radius[1]
-            lash = _ellipse(shape, (cx, lash_y), lash_radius) & ~_ellipse(shape, (cx, lash_y + EYE_LASH * px), lash_radius)
+        spec = LASHES[0 if cx < shape[1] / 2 else 1]
+        side = -1 if cx < shape[1] / 2 else 1          # 目尻は顔の外側
+        lash = np.zeros(shape, np.uint8)
+        for stroke in spec.values():
+            points = [(cx + side * x * a, cy + y * b, width * px) for x, y, width in stroke]
+            lash |= _stroke(shape, points)
+        lash &= ~outer
 
         # 白い光は絵の位置に置く。輪郭の溝にかかるなら、かからなくなるまで瞳の中心へ寄せる
         room = trace.shrink(inner, 0.2 * px)
@@ -224,24 +232,18 @@ def _eyes(traced, mm):
     return trace.smooth(groove, 0.1 * px), area
 
 
-def _lash_ends(traced, outer, center, b, px):
-    """上まつ毛のうち、瞳の楕円の外へはっきりはみ出す部分 (両端と、目尻で下へ回り込む跳ね) を絵からなぞる。
+def _stroke(shape, points):
+    """点 (x, y, 太さ) をなめらかにつないだ、太さの変わる線。筆で引いた線のように両端が丸い。"""
+    from scipy.interpolate import splev, splprep
 
-    楕円の内側の上の方は、輪郭の輪と影でどのみち溝になるので、外側だけ拾えば足りる。
-    楕円のすぐ外 (0.4 mm 以内) は拾わない: そこは瞳の輪郭のずれで、拾うと輪郭がでこぼこする。
-    """
-    up = traced["up"]
-    cx, cy = center
-    near = trace.grow(outer, 14 * up)
-    # まつ毛とつながっている黒だけ (瞳の上の方の 1 点を含む塊)
-    seed = np.zeros_like(outer)
-    cv2.circle(seed, (int(cx), int(cy - 0.5 * b)), int(2 * up), 255, cv2.FILLED)
-    dark = np.zeros_like(outer)
-    for piece in trace.components(traced["black"] & near):
-        if (piece & seed).any():
-            dark |= piece
-    ends = _keep_big(dark & ~trace.grow(outer, 0.4 * px), (0.6 * px) ** 2)
-    return trace.smooth(trace.thicken_thin_lines(trace.smooth(ends, 0.15 * px), LASH_MIN * px), 0.15 * px)
+    xs, ys, widths = (np.array(v, float) for v in zip(*points))
+    spline, nodes = splprep([xs, ys], s=0, k=min(3, len(points) - 1))
+    out = np.zeros(shape, np.uint8)
+    for t in np.linspace(0, 1, 600):
+        x, y = splev(t, spline)
+        cv2.circle(out, (int(round(float(x))), int(round(float(y)))), max(int(round(np.interp(t, nodes, widths) / 2)), 1),
+                   255, cv2.FILLED)
+    return out
 
 
 def _cheeks(traced, mm):
