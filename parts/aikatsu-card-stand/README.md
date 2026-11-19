@@ -49,4 +49,4 @@
 
 | 日付 | 設定 | 結果 |
 | --- | --- | --- |
-| (未印刷) | 0.20mm Standard / Bambu PLA Basic / Textured PEI、55 分・30.1 g | |
+| 2026-11-19 | 0.20mm Standard / Bambu PLA Basic / Textured PEI、55分19秒・30.06 g。スライサーが星を 45° 回して、先端をベッドの四隅へ向けて置いた | 送信して印刷開始を確認。出来とカードの合い具合は未確認 |
