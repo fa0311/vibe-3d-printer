@@ -16,9 +16,11 @@ from v3d import fit, trace
 SOURCE = Path(__file__).with_name("source.png")     # 500×500 px、背景は透明
 PREVIEW_COLOR = "#d9b77e"     # 確認用の絵の色 (髪の色に寄せた仮の色)
 
-# 瞳の描き方: "pupil" (輪郭の線 + 真ん中の瞳) / "outline" (輪郭の線だけ) /
-#             "solid" (まるごとくぼませて、白い光だけ残す)
-EYES = "pupil"
+# 瞳の描き方 (どれも輪郭の輪 + 三日月形の上まつ毛 + 白い光):
+#   "manga":  上まつ毛の下の影と真ん中の瞳をくぼませ、下に明るい所を残す (元の絵の濃淡の配分)
+#   "iris":   瞳全体をくぼませ、下に細い三日月だけ残す
+#   "pupil":  真ん中の細い瞳だけくぼませる / "outline": 輪郭だけ
+EYES = "manga"
 # ほっぺたの描き方: "lines" (斜めの短い線 3 本) / "dimple" (浅い楕円のくぼみ) / "none" (描かない)
 CHEEKS = "lines"
 
@@ -39,8 +41,10 @@ RING_OVERLAP = 2.0    # 輪を板にどれだけ食い込ませるか
 EYE_RING = 0.9        # 瞳の輪郭の溝の幅
 EYE_LASH = 1.5        # 上まつ毛 (三日月形の溝) のいちばん太い所
 EYE_WING = 1.0        # 上まつ毛の両端を、瞳の幅よりこれだけ外へ出す
-EYE_PUPIL = (0.33, 0.52)      # 真ん中の瞳の大きさ (瞳全体の幅・高さに対する割合)
-EYE_SPARK = (0.9, 0.65)       # 白い光 (楕円) の半径: 横, 縦
+EYE_PUPIL = (0.36, 0.50)      # 真ん中の瞳の半径 (瞳全体の半径に対する割合: 横, 縦)。絵では幅の 38%
+EYE_SHADE = 0.8       # "manga": 上まつ毛の下の影の厚み (瞳の縦の半径に対する割合)
+EYE_GLINT = 1.3       # "iris": 下に残す三日月のいちばん太い所
+EYE_SPARK = (1.0, 0.65)       # 白い光 (楕円) の半径: 横, 縦。位置は絵のとおり
 LASH_ZONE = 4.0       # 瞳のふちからこの距離 (元の絵の画素) までの細いまつ毛は描かない
 
 # ほっぺた
@@ -108,8 +112,12 @@ def _trace(bgr, sil, up):
         blob = trace.components(trace.drop_thin(blob & trace.shrink(zone, 1.5 * up), 2.5 * up))[0]
         # まつ毛の両端を落とした丸い部分の外接四角から、瞳の中心と半径 (横, 縦) を取る
         ys, xs = np.nonzero(trace.components(trace.drop_thin(blob, 4.5 * up))[0])
+        # 白い光 = 瞳の内側の白い塊のうち、いちばん大きいもの (下の細い三日月やふちの肌色は除く)
+        white = trace.components(trace.drop_thin(_mask(v > 225) & trace.shrink(blob, 2 * up), 1.2 * up))[0]
+        wy, wx = np.nonzero(white)
         eyes.append({
             "blob": blob,
+            "spark": (wx.mean(), wy.mean()),
             "center": ((xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2),
             "radius": ((xs.max() - xs.min()) / 2, (ys.max() - ys.min()) / 2),
         })
@@ -139,9 +147,8 @@ def _ellipse(shape, center, radius):
 def _eyes(traced, mm):
     """瞳の溝と、瞳の領域 (なぞった線を消す範囲) を返す。描き方は EYES で選ぶ。
 
-    位置は絵のとおり、大きさは左右の平均。形は楕円で描き直す:
-    外周の輪、その上にかぶさる三日月形の上まつ毛、上まつ毛からぶら下がる縦長の瞳、瞳の右上を欠く白い光。
-    瞳を細くしてあるのは、広いくぼみだと底まで光が届いて黒く見えないから (暗く見えるのは狭い溝だけ)。
+    位置は絵のとおり、大きさは左右の平均。形は楕円で描き直す (絵をなぞると輪郭がでこぼこする)。
+    元の絵の瞳は、上がまつ毛の影で黒く、真ん中に黒い瞳 (幅の 38%) があり、下に明るい三日月がある。
     """
     px = 1 / mm
     shape = traced["eyes"][0]["blob"].shape
@@ -152,24 +159,27 @@ def _eyes(traced, mm):
     for e in traced["eyes"]:
         cx, cy = e["center"]
         outer = _ellipse(shape, (cx, cy), (a, b))
+        inner_radius = (a - EYE_RING * px, b - EYE_RING * px)
+        inner = _ellipse(shape, (cx, cy), inner_radius)
         lash_radius = (a + EYE_WING * px, 0.55 * b)
         lash_y = cy - b + lash_radius[1]
         lash = _ellipse(shape, (cx, lash_y), lash_radius) & ~_ellipse(shape, (cx, lash_y + EYE_LASH * px), lash_radius)
-        pupil_radius = (EYE_PUPIL[0] * a, EYE_PUPIL[1] * b)
-        pupil_center = (cx, cy - 0.2 * b)
-        spark = _ellipse(shape, (pupil_center[0] + 0.8 * pupil_radius[0], pupil_center[1] - 0.4 * pupil_radius[1]),
-                         (EYE_SPARK[0] * px, EYE_SPARK[1] * px))
-        if EYES == "solid":
-            g = (outer | lash) & ~spark
-        elif EYES in ("outline", "pupil"):
-            g = (outer & ~_ellipse(shape, (cx, cy), (a - EYE_RING * px, b - EYE_RING * px))) | lash
-            if EYES == "pupil":
-                g |= _ellipse(shape, pupil_center, pupil_radius) & ~spark
-        else:
+        spark = _ellipse(shape, e["spark"], (EYE_SPARK[0] * px, EYE_SPARK[1] * px))
+        g = (outer & ~inner) | lash
+        if EYES == "manga":
+            shade = inner & ~_ellipse(shape, (cx, cy + EYE_SHADE * b), inner_radius)
+            pupil = _ellipse(shape, (cx, cy + 0.1 * b), (EYE_PUPIL[0] * a, EYE_PUPIL[1] * b))
+            g |= (shade | pupil) & ~spark
+        elif EYES == "iris":
+            glint = inner & ~_ellipse(shape, (cx, cy - EYE_GLINT * px), inner_radius)
+            g |= inner & ~glint & ~spark
+        elif EYES == "pupil":
+            g |= _ellipse(shape, (cx, cy - 0.2 * b), (EYE_PUPIL[0] * a, EYE_PUPIL[1] * b)) & ~spark
+        elif EYES != "outline":
             raise ValueError(f"EYES が不正: {EYES}")
         groove |= g
         area |= outer | lash | e["blob"]
-    return groove, area
+    return trace.smooth(groove, 0.08 * px), area
 
 
 def _cheeks(traced, mm):
