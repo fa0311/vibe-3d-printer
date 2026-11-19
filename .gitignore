@@ -7,3 +7,7 @@ parts/*/out/
 
 # プリンタの接続情報 (アクセスコードを含む)
 printer.local.toml
+
+# 持ち主からもらった絵のうち、公開してよいと言われていないもの (手元にだけ置く)
+parts/hood-keychain/source.png
+parts/bear-keychain/source.png
