@@ -154,15 +154,18 @@ def shaded(height: np.ndarray, mm_per_px: float, color_bgr=(90, 200, 120), backg
     for k in range(1, int(4.0 / (step * 1.414 * mm_per_px)) + 1):
         toward_light = np.roll(h, (k * step, k * step), axis=(0, 1))
         shadow |= toward_light - k * step * 1.414 * mm_per_px > h + 0.05
+    # 影と下の「溝の暗さ」は、境目を少しぼかす (ぼかさないと、広いくぼみの中が縞模様に見える)
+    shadow = cv2.GaussianBlur(shadow.astype(np.float32), (0, 0), 0.12 / mm_per_px)
 
-    # 溝の奥ほど暗い
+    # 溝の奥ほど暗い。壁から 1.2 mm より離れた所 (広いくぼみの真ん中) は暗くならない
     surroundings = cv2.dilate(h, disk(1.2 / mm_per_px))
-    occlusion = 1 - 0.45 * np.clip((surroundings - h) / 2.0, 0, 1)
+    occlusion = 0.45 * np.clip((surroundings - h) / 2.0, 0, 1)
+    occlusion = cv2.GaussianBlur(occlusion, (0, 0), 0.2 / mm_per_px)
 
-    brightness = (0.42 + 0.58 * lambert / light[2]) * occlusion * np.where(shadow, 0.72, 1.0)
+    brightness = (0.42 + 0.58 * lambert / light[2]) * (1 - occlusion) * (1 - 0.28 * shadow)
     out = np.empty((*h.shape, 3), np.float32)
     out[:] = background
     # 地面に落ちる影 (穴の中や外周で、板が浮いて見えるように)
-    out[shadow & ~material] *= 0.86
+    out[~material] *= 1 - 0.14 * shadow[~material, None]
     out[material] = np.clip(brightness[material, None] * np.array(color_bgr, np.float32), 0, 255)
     return out.astype(np.uint8)
