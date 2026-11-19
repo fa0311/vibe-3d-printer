@@ -49,4 +49,4 @@
 
 | 日付 | 設定 | 結果 |
 | --- | --- | --- |
-| (未印刷) | 1 個で 28 分・5.2 g (0.20mm Standard / Bambu PLA Basic / Textured PEI) | |
+| 2026-11-19 | 1 個。0.20mm Standard / Bambu PLA Basic / Textured PEI、27分49秒・5.27 g | 送信して印刷開始を確認。出来は未確認 |
