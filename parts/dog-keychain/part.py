@@ -91,8 +91,11 @@ UPSAMPLE = 8          # 輪郭を滑らかにするため、拡大してから�
 MARGIN = 6            # 切り出しの外側に付けて読む余白 (元の絵の画素)
 PAD_MM = 10.0         # 縁と輪がはみ出せるよう、絵の周りに足す余白
 
-# チップを入れるときは、空洞の天井を刷る直前 (チップが入る高さまで刷り終えたところ) で一時停止する
-PRINT = {"pause_at": [CHIP_BOTTOM + CHIP_POCKET]} if CHIP else {}
+PRINT = {"copies": {"dog-keychain": 2}}     # 2 個並べて刷る (持ち主の注文、2026-11-20)
+if CHIP:
+    # 空洞の天井を刷る直前 (チップが入る高さまで刷り終えたところ) で一時停止する。2 個とも同じ層で止まるので、
+    # 1 回止まったときに 2 枚とも置く
+    PRINT["pause_at"] = [CHIP_BOTTOM + CHIP_POCKET]
 
 
 def _mask(condition) -> np.ndarray:

@@ -12,8 +12,14 @@ part.py の PRINT で指定できるもの (すべて省略可):
 
 一時停止 (pause_at) の仕組み: 機種の「層が変わるたびに実行する G コード」に、決まった層でだけ一時停止の命令
 (機種プリセットの machine_pause_gcode。A1 mini は M400 U1) を出す条件文を足している。Bambu Studio の画面で
-「Add Pause」をしたときと同じ命令が、同じ場所 (その層を刷り始める直前) に入る。プリンタは頭をよけて止まり、
-本体の画面か Bambu Handy で再開するまで待つ。
+「Add Pause」をしたときと同じ命令が、同じ場所 (その層を刷り始める直前) に入る。本体の画面か Bambu Handy で
+再開するまで待つ。
+
+その場所では、ノズルが刷ったばかりの面の高さにいる。止まっている間に頭 (ノズル) がその上に居座ると、物を置けず、
+熱いノズルが部品に触れたままになる。ファームウェアが自分でよけるかは確かめていないので、止める前にこちらで
+ノズルを持ち上げ、機種の終了 G コードと同じ「よける位置」(造形範囲の左の外、ベッドは手前) へ動かす。
+再開すると、スライサーの「次の層へ移る動き」で刷る位置の上へ戻り、刷る高さまで下りてから刷り始める
+(そうなっていることも、スライス結果で確かめる)。
 """
 
 from __future__ import annotations
@@ -148,6 +154,11 @@ def _verify(gcode: str, machine: dict, process: dict, filament: dict, plate: str
 
 
 PAUSE_MARK = "; v3d: pause here"
+# 止まっている間に頭をよける位置。A1 mini の終了 G コードが、刷り終えたあとに頭をよける動きと同じ:
+# 左端 (X=0) を経て造形範囲の左の外 (X=-13) へ。ベッドは手前 (Y=180) へ出す。先にノズルを持ち上げる
+PARK_MODEL = "Bambu Lab A1 mini"
+PARK_LIFT = 20.0      # 持ち上げる高さ (mm)
+PARK_MOVES = ("G1 X0 F18000", "G1 X-13.0 F3000", "G1 Y180 F3600")
 
 
 def _pause_layers(heights: list[float], process: dict) -> dict[int, float]:
@@ -164,17 +175,41 @@ def _pause_layers(heights: list[float], process: dict) -> dict[int, float]:
     return out
 
 
+def _pause_block(machine: dict, z: float) -> list[str]:
+    """高さ z まで刷ったところで止める命令: 持ち上げる → よける → 止まる。"""
+    lift = f"G1 Z{min(z + PARK_LIFT, float(machine['printable_height'])):.2f} F600"
+    return [PAUSE_MARK, lift, *PARK_MOVES, machine["machine_pause_gcode"].strip()]
+
+
 def _with_pauses(machine: dict, layers: dict[int, float]) -> dict:
     if not layers:
         return machine
-    when = " or ".join(f"layer_num == {n}" for n in sorted(layers))
+    if machine["printer_model"] != PARK_MODEL:
+        raise SliceError(f"pause_at の頭のよけ方は {PARK_MODEL} 用です (この機種: {machine['printer_model']})")
+    blocks = ["\n".join([f"{{if layer_num == {n}}}", *_pause_block(machine, z), "{endif}"]) for n, z in sorted(layers.items())]
+    return machine | {"layer_change_gcode": machine["layer_change_gcode"].rstrip("\n") + "\n" + "\n".join(blocks)}
+
+
+def _height_when_printing_resumes(lines: list[str]) -> float | None:
+    """再開後、最初に (横へ動きながら) 押し出す時点で、ノズルに指示されている高さ。"""
+    z = None
+    for line in lines:
+        if not line.startswith(("G0 ", "G1 ", "G2 ", "G3 ")):
+            continue
+        if m := re.search(r" Z(-?[\d.]+)", line):
+            z = float(m.group(1))
+        e = re.search(r" E(-?[\d.]+)", line)
+        if e and float(e.group(1)) > 0 and re.search(r" [XY]-?[\d.]", line):
+            return z
+    return None
+
+
+def _verify_pauses(gcode: str, layers: dict[int, float], machine: dict, total_minutes: float) -> list[dict]:
+    """一時停止が、頼んだ高さを刷り終えた直後に、頼んだ数だけ入っているかを G コードで確かめる。
+
+    止まる前に頭をよけること、再開後は次の層の高さまで下りてから刷り始めることも確かめる。
+    """
     pause = machine["machine_pause_gcode"].strip()
-    extra = f"{{if {when}}}\n{PAUSE_MARK}\n{pause}\n{{endif}}"
-    return machine | {"layer_change_gcode": machine["layer_change_gcode"].rstrip("\n") + "\n" + extra}
-
-
-def _verify_pauses(gcode: str, layers: dict[int, float], pause: str, total_minutes: float) -> list[dict]:
-    """一時停止が、頼んだ高さを刷り終えた直後に、頼んだ数だけ入っているかを G コードで確かめる。"""
     found, top, height, layer, remaining = [], 0.0, 0.0, 0, None
     lines = gcode.split("; EXECUTABLE_BLOCK_START", 1)[-1].splitlines()
     for i, line in enumerate(lines):
@@ -185,8 +220,13 @@ def _verify_pauses(gcode: str, layers: dict[int, float], pause: str, total_minut
         elif line.startswith("M73 P") and (m := re.search(r" R(\d+)", line)):
             remaining = int(m.group(1))
         elif line.strip() == PAUSE_MARK:
-            if lines[i + 1].strip() != pause:
-                raise SliceError(f"一時停止の印の次の行が {pause!r} ではありません: {lines[i + 1]!r}")
+            block = _pause_block(machine, top - height)
+            written = [ln.strip() for ln in lines[i: i + len(block)]]
+            if written != block:
+                raise SliceError(f"一時停止の命令が意図と違います:\n  意図 {block}\n  実際 {written}")
+            resume = _height_when_printing_resumes(lines[i + len(block):])
+            if resume is None or abs(resume - top) > 1e-3:
+                raise SliceError(f"再開後、刷る高さ ({top} mm) に下りないまま刷り始めます (指示されている高さ: {resume})")
             minute = None if remaining is None else max(round(total_minutes - remaining), 0)
             found.append({"z": round(top - height, 3), "layer": layer, "minute": minute})
     want = sorted(layers.values())
@@ -280,8 +320,7 @@ def slice_part(built: Built, *, process: str | None = None, filament: str | None
     with zipfile.ZipFile(work / target) as z:
         gcode = z.read("Metadata/plate_1.gcode").decode("utf-8", "replace")
     _verify(gcode, machine, process_cfg, filament_cfg, spec.plate, settings, filament_settings)
-    pauses = _verify_pauses(gcode, pause_layers, machine["machine_pause_gcode"].strip(),
-                            float(plate["total_predication"]) / 60)
+    pauses = _verify_pauses(gcode, pause_layers, machine, float(plate["total_predication"]) / 60)
 
     header = gcode.split("; HEADER_BLOCK_END", 1)[0]
     meters = float(re.search(r"total filament length \[mm\] : ([\d.,]+)", header).group(1).split(",")[0]) / 1000
