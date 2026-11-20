@@ -6,8 +6,13 @@
 
 板の中に NFC のチップを埋め込める (CHIP)。板の真ん中に空洞を作り、空洞の天井を刷る直前でプリンタを
 一時停止させる。止まっている間に持ち主がチップを空洞の底に貼って再開すると、上に天井と絵が刷られる。
+
+大きさと刷るノズルは Size で決める。このファイルの SIZE は板の直径 53.2 mm・0.4 mm ノズル。
+線の太さなどの mm の値はこの大きさで決めたもので、別の大きさでは絵と一緒に伸び縮みする
+(ただし、ノズルで刷れる太さより細くはしない)。小さい版は make() を別の Size で呼ぶ。
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -29,7 +34,6 @@ CHEEKS = "lines"
 
 # ---- 寸法 (mm) ----
 ICON_BOX = (149, 119, 183)    # アイコンの切り出し位置: 左上の x, y と一辺 (元の絵の画素)
-ART = 50.0            # 絵の直径。板は縁の分だけこれより大きい (hood / bear とそろえた)
 
 # NFC チップ (直径, 厚み)。持ち主の実測で、厚みは裏のテープのはくり紙を含む。入れないなら None
 CHIP = (25.0, 0.9)
@@ -47,10 +51,19 @@ FLOOR = CHIP_BOTTOM + CHIP_POCKET + CHIP_ROOF if CHIP else 0.4          # 溝の
 THICK = FLOOR + GROOVE                                                  # 板の厚み (チップ入り 3.6 / なし 2.6)
 if CHIP:
     assert CHIP_POCKET >= CHIP[1], "空洞がチップより浅い (ノズルがチップに当たる)"
+
+# ここから下の線の太さ・大きさ (mm) は、絵の直径 BASE_ART・0.4 mm ノズルで決めた値。
+# 別の大きさ・ノズルでは Size が伸び縮みさせる
+BASE_ART = 50.0       # 絵の直径。板は縁の分だけこれより大きい (hood / bear とそろえた)
 MIN_LINE = 1.0        # 溝の幅 (絵の線は 0.7 mm 相当なので、ここまで太らせる)
 MIN_WEB = 0.8         # 溝と溝の間に残す壁の最小幅。これより細い壁は溝にまとめる
 MIN_ISLAND = 1.5      # 溝に囲まれた島の最小面積 (mm²)。これより小さい島は溝にまとめる
 RIM = 1.6             # 絵の外側に付ける縁
+MIN_RIM = 1.2         # 小さくしても、縁はこれより細くしない
+# ノズルごとの、溝の幅の下限。0.4 mm ノズルは 1.0 mm (上の MIN_LINE)。
+# 0.2 mm ノズルは、その半分まで細くできる見込み (ノズルの太さに対する比は同じ。まだ刷っていない)
+NOZZLE_MIN_LINE = {0.4: 1.0, 0.2: 0.5}
+CHIP_WALL = 1.6       # チップの空洞のまわりに残す壁 (板を小さくするときの下限を決める)
 RING_OUTER = 8.5      # 金具を通す輪の外径
 RING_HOLE = 3.5       # 輪の穴の仕上がり径 (ボールチェーン・二重リング用)
 RING_OVERLAP = 2.0    # 輪を板にどれだけ食い込ませるか
@@ -85,6 +98,45 @@ CHEEK_LINE = (0.8, 2.8)       # 斜めの線の幅と長さ
 CHEEK_PITCH = 1.7     # 線と線の間隔
 CHEEK_SLANT = 65      # 線の傾き (度。90 で垂直)
 CHEEK_DEPTH = 0.4     # 浅いくぼみの深さ ("dimple")
+
+
+
+@dataclass(frozen=True)
+class Size:
+    """板の大きさと刷るノズル。線の太さ・瞳の光の大きさ・縁の幅などは、ここから決まる。"""
+
+    art: float = BASE_ART     # 絵の直径 (mm)
+    nozzle: float = 0.4       # 刷るノズルの太さ (mm)
+
+    @property
+    def scale(self) -> float:
+        """絵の伸び縮み (BASE_ART が 1)。線の長さや間隔に掛ける。"""
+        return self.art / BASE_ART
+
+    @property
+    def stroke(self) -> float:
+        """線の太さの伸び縮み。絵と一緒に細くするが、ノズルで刷れる太さより細くはしない。"""
+        return max(self.scale, NOZZLE_MIN_LINE[self.nozzle] / MIN_LINE)
+
+    @property
+    def rim(self) -> float:
+        return max(RIM * self.scale, MIN_RIM)
+
+    @property
+    def plate(self) -> float:
+        """板の直径 (金具の輪は含まない)。"""
+        return self.art + 2 * self.rim
+
+    @classmethod
+    def with_plate(cls, plate: float, nozzle: float) -> "Size":
+        """板の直径から決める。"""
+        art = plate / (1 + 2 * RIM / BASE_ART)
+        if RIM * art / BASE_ART < MIN_RIM:
+            art = plate - 2 * MIN_RIM
+        return cls(art=art, nozzle=nozzle)
+
+
+SIZE = Size()         # このファイルで作る大きさ: 板の直径 53.2 mm、0.4 mm ノズル
 
 # ---- 絵の読み取り ----
 UPSAMPLE = 8          # 輪郭を滑らかにするため、拡大してから処理する
@@ -205,7 +257,7 @@ def _ellipse(shape, center, radius):
     return out
 
 
-def _eyes(traced, mm):
+def _eyes(traced, mm, size: Size):
     """瞳の溝と、瞳の領域 (なぞった線を消す範囲) を返す。描き方は EYES で選ぶ。
 
     位置と大きさは絵のとおり。形は楕円で描き直す (絵をなぞると輪郭がでこぼこする)。
@@ -219,21 +271,22 @@ def _eyes(traced, mm):
         cx, cy = e["center"]
         a, b = e["radius"]
         outer = _ellipse(shape, (cx, cy), (a, b))
-        inner_radius = (a - EYE_RING * px, b - EYE_RING * px)
+        ring = EYE_RING * size.stroke * px
+        inner_radius = (a - ring, b - ring)
         inner = _ellipse(shape, (cx, cy), inner_radius)
         spec = LASHES[0 if cx < shape[1] / 2 else 1]
         side = -1 if cx < shape[1] / 2 else 1          # 目尻は顔の外側
         lash = np.zeros(shape, np.uint8)
         for stroke in spec.values():
-            points = [(cx + side * x * a, cy + y * b, width * px) for x, y, width in stroke]
+            points = [(cx + side * x * a, cy + y * b, width * size.stroke * px) for x, y, width in stroke]
             lash |= _stroke(shape, points)
         lash &= ~outer
 
         # 白い光は絵の位置に置く。輪郭の溝にかかるなら、かからなくなるまで瞳の中心へ寄せる
-        room = trace.shrink(inner, 0.2 * px)
+        room = trace.shrink(inner, 0.2 * size.stroke * px)
         sx, sy = e["spark"]
         for step in np.linspace(0, 1, 41):
-            spark = _ellipse(shape, (sx + (cx - sx) * step, sy + (cy - sy) * step), (EYE_SPARK[0] * px, EYE_SPARK[1] * px))
+            spark = _ellipse(shape, (sx + (cx - sx) * step, sy + (cy - sy) * step), (EYE_SPARK[0] * size.stroke * px, EYE_SPARK[1] * size.stroke * px))
             if not (spark & ~room).any():
                 break
 
@@ -243,7 +296,7 @@ def _eyes(traced, mm):
             pupil = _ellipse(shape, (cx, cy + 0.1 * b), (EYE_PUPIL[0] * a, EYE_PUPIL[1] * b))
             g |= (shade | pupil) & ~spark
         elif EYES == "iris":
-            glint = inner & ~_ellipse(shape, (cx, cy - EYE_GLINT * px), inner_radius)
+            glint = inner & ~_ellipse(shape, (cx, cy - EYE_GLINT * size.stroke * px), inner_radius)
             g |= inner & ~glint & ~spark
         elif EYES == "pupil":
             g |= _ellipse(shape, (cx, cy - 0.2 * b), (EYE_PUPIL[0] * a, EYE_PUPIL[1] * b)) & ~spark
@@ -251,7 +304,7 @@ def _eyes(traced, mm):
             raise ValueError(f"EYES が不正: {EYES}")
         groove |= g
         area |= outer | lash | e["blob"]
-    return trace.smooth(groove, 0.1 * px), area
+    return trace.smooth(groove, 0.1 * size.stroke * px), area
 
 
 def _stroke(shape, points):
@@ -268,7 +321,7 @@ def _stroke(shape, points):
     return out
 
 
-def _cheeks(traced, mm):
+def _cheeks(traced, mm, size: Size):
     """ほっぺたの (溝, 浅いくぼみ) を返す。描き方は CHEEKS で選ぶ。"""
     px = 1 / mm
     shape = traced["eyes"][0]["blob"].shape
@@ -277,11 +330,13 @@ def _cheeks(traced, mm):
     for cheek in traced["cheeks"]:
         cx, cy = cheek["center"]
         if CHEEKS == "lines":
-            width, length = CHEEK_LINE
+            width = CHEEK_LINE[0] * size.stroke
+            length = max(CHEEK_LINE[1] * size.scale, 2 * width)
+            pitch = max(CHEEK_PITCH * size.scale, width + MIN_WEB * size.stroke)    # 線どうしがつながらないように
             dx = np.cos(np.radians(CHEEK_SLANT)) * (length - width) / 2 * px
             dy = np.sin(np.radians(CHEEK_SLANT)) * (length - width) / 2 * px
             for k in (-1, 0, 1):
-                x = cx + k * CHEEK_PITCH * px
+                x = cx + k * pitch * px
                 cv2.line(groove, (int(round(x - dx)), int(round(cy + dy))), (int(round(x + dx)), int(round(cy - dy))),
                          255, int(round(width * px)), cv2.LINE_8)
         elif CHEEKS == "dimple":
@@ -307,34 +362,35 @@ def _add_ring(plate, mm, ring_x):
     return trace.fill_holes(trace.components(trace.smooth(plate, 0.3 * px))[0]), (ring_x, ring_y)
 
 
-def _layout():
+def _layout(size: Size = SIZE):
     """板・溝の領域 (マスク) と、寸法の換算を決める。"""
     x, y, side = ICON_BOX
     up = UPSAMPLE
     bgr, sil = _read((x - MARGIN, y - MARGIN, x + side + MARGIN, y + side + MARGIN), up)
     n = bgr.shape[0]
-    mm = ART / (side * up)                 # 拡大後の 1 px が何 mm か
+    mm = size.art / (side * up)            # 拡大後の 1 px が何 mm か
     px = 1 / mm
+    s = size.stroke
     traced = _trace(bgr, sil, up)
 
     lines = traced["lines"]
-    eye_groove, eye_area = _eyes(traced, mm)
+    eye_groove, eye_area = _eyes(traced, mm, size)
     lines &= ~trace.grow(eye_area, LASH_ZONE * up)     # 細いまつ毛は、太らせるとつぶれて汚れになる
     lines = _keep_big(lines, 30 * up * up)             # 髪の白い光のふちなど、線でない粒を捨てる
-    groove = trace.smooth(trace.thicken_evenly(trace.smooth(lines, 0.1 * px), MIN_LINE * px), 0.15 * px)
-    groove = trace.smooth(trace.close_gaps(groove, MIN_WEB / 2 * px), 0.08 * px)
-    groove = _merge_small_islands(groove, mm, MIN_ISLAND)
-    cheek_groove, dimple = _cheeks(traced, mm)
-    groove = (groove & ~trace.grow(eye_area, 0.1 * px)) | eye_groove | cheek_groove
+    groove = trace.smooth(trace.thicken_evenly(trace.smooth(lines, 0.1 * s * px), MIN_LINE * s * px), 0.15 * s * px)
+    groove = trace.smooth(trace.close_gaps(groove, MIN_WEB * s / 2 * px), 0.08 * s * px)
+    groove = _merge_small_islands(groove, mm, MIN_ISLAND * s**2)
+    cheek_groove, dimple = _cheeks(traced, mm, size)
+    groove = (groove & ~trace.grow(eye_area, 0.1 * s * px)) | eye_groove | cheek_groove
 
     art = np.zeros_like(groove)
     cv2.circle(art, (n // 2, n // 2), side * up // 2, 255, cv2.FILLED)      # 丸で切り出す (四隅は切れる)
     pad = int(round(PAD_MM * px))
     art, groove, dimple = (np.pad(m, pad) for m in (art, groove & art, dimple & art))
-    plate, ring = _add_ring(trace.grow(art, RIM * px), mm, art.shape[1] // 2)
+    plate, ring = _add_ring(trace.grow(art, size.rim * px), mm, art.shape[1] // 2)
 
     # 角だけで触れ合う所があると立体が壊れるので、最後に輪郭をならす
-    groove = trace.smooth(groove & plate, 0.04 * px)
+    groove = trace.smooth(groove & plate, 0.04 * s * px)
     assert not (groove & ~trace.shrink(plate, 1.0 * px)).any(), "溝が板の縁に近すぎる"
     ys, xs = np.nonzero(plate)
     center = ((xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2)
@@ -355,9 +411,11 @@ def _prism(mask, layout, z0: float, z1: float):
     return extrude(Sketch() + shapes, amount=z1 - z0).move(Location((0, 0, z0)))
 
 
-def build():
+def make(size: Size):
     """絵の面を上にして寝かせて刷る (裏は平ら)。"""
-    L = _layout()
+    if CHIP:
+        assert size.plate >= CHIP_POCKET_D + 2 * CHIP_WALL, f"板 (直径 {size.plate:.1f} mm) が小さすぎて、チップが入らない"
+    L = _layout(size)
     part = _prism(L["plate"], L, 0, FLOOR) + _prism(L["top"], L, FLOOR, THICK)
     if L["dimple"].any():
         part += _prism(L["dimple"], L, FLOOR, THICK - CHEEK_DEPTH)
@@ -367,3 +425,7 @@ def build():
         pocket = Cylinder(CHIP_POCKET_D / 2, CHIP_POCKET, align=(Align.CENTER, Align.CENTER, Align.MIN))
         part -= Pos(*L["middle"], CHIP_BOTTOM) * pocket
     return part
+
+
+def build():
+    return make(SIZE)
