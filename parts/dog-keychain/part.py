@@ -3,6 +3,9 @@
 1色でしか刷れないので、線を深い溝にして描く (cat-keychain、hood-keychain と同じ)。
 この絵は線が茶色で細く、塗りに濃淡があるので、「黒い画素」ではなく「周りより暗い細い線」を拾う。
 板に載せるのは SNS のアイコンと同じ範囲 (顔のアップ)。全身の案は持ち主に「不要」と言われた。
+
+板の中に NFC のチップを埋め込める (CHIP)。板の真ん中に空洞を作り、空洞の天井を刷る直前でプリンタを
+一時停止させる。止まっている間に持ち主がチップを空洞の底に貼って再開すると、上に天井と絵が刷られる。
 """
 
 from pathlib import Path
@@ -27,8 +30,23 @@ CHEEKS = "lines"
 # ---- 寸法 (mm) ----
 ICON_BOX = (149, 119, 183)    # アイコンの切り出し位置: 左上の x, y と一辺 (元の絵の画素)
 ART = 50.0            # 絵の直径。板は縁の分だけこれより大きい (hood / bear とそろえた)
-THICK = 2.6           # 板の厚み
-FLOOR = 0.4           # 溝の底に残す薄皮 (2 層)
+
+# NFC チップ (直径, 厚み)。持ち主の実測で、厚みは裏のテープのはくり紙を含む。入れないなら None
+CHIP = (25.0, 0.9)
+CHIP_BOTTOM = 0.4     # チップの下に残す板 (2 層)
+# 空洞の深さ。チップが縁から飛び出すとノズルが当たるので、チップの厚み以上で、いちばん近い層の境目にする。
+# はくり紙をはがしたチップの上には 0.1〜0.2 mm のすき間が残り、天井の 1 層目が少し垂れてチップに乗る
+CHIP_POCKET = 1.0
+CHIP_ROOF = 0.6       # 空洞の天井から溝の底までの板 (3 層。1 層目は宙に渡して刷るので荒れる)
+# 空洞の直径。熱いベッドの上で指でぽとりと置けるように、ゆるめにする (チップはテープで底に貼るので動かない)
+CHIP_POCKET_D = fit.hole(CHIP[0]) + 2 * fit.CLEAR_LOOSE if CHIP else 0.0
+
+# チップを入れると、溝の下に「底 + 空洞 + 天井」が要る。板が厚くなりすぎないよう、溝を 2.2 → 1.6 mm に浅くする
+GROOVE = 1.6 if CHIP else 2.2                                           # 溝の深さ
+FLOOR = CHIP_BOTTOM + CHIP_POCKET + CHIP_ROOF if CHIP else 0.4          # 溝の底から裏までの厚み
+THICK = FLOOR + GROOVE                                                  # 板の厚み (チップ入り 3.6 / なし 2.6)
+if CHIP:
+    assert CHIP_POCKET >= CHIP[1], "空洞がチップより浅い (ノズルがチップに当たる)"
 MIN_LINE = 1.0        # 溝の幅 (絵の線は 0.7 mm 相当なので、ここまで太らせる)
 MIN_WEB = 0.8         # 溝と溝の間に残す壁の最小幅。これより細い壁は溝にまとめる
 MIN_ISLAND = 1.5      # 溝に囲まれた島の最小面積 (mm²)。これより小さい島は溝にまとめる
@@ -73,7 +91,8 @@ UPSAMPLE = 8          # 輪郭を滑らかにするため、拡大してから�
 MARGIN = 6            # 切り出しの外側に付けて読む余白 (元の絵の画素)
 PAD_MM = 10.0         # 縁と輪がはみ出せるよう、絵の周りに足す余白
 
-PRINT = {}
+# チップを入れるときは、空洞の天井を刷る直前 (チップが入る高さまで刷り終えたところ) で一時停止する
+PRINT = {"pause_at": [CHIP_BOTTOM + CHIP_POCKET]} if CHIP else {}
 
 
 def _mask(condition) -> np.ndarray:
@@ -324,6 +343,7 @@ def _layout():
         "mm": mm,
         "center": center,
         "ring": ((ring[0] - center[0]) * mm, (center[1] - ring[1]) * mm),
+        "middle": ((art.shape[1] / 2 - center[0]) * mm, (center[1] - art.shape[0] / 2) * mm),   # 丸い板の中心
     }
 
 
@@ -339,4 +359,8 @@ def build():
     if L["dimple"].any():
         part += _prism(L["dimple"], L, FLOOR, THICK - CHEEK_DEPTH)
     hole = Cylinder(fit.hole(RING_HOLE) / 2, THICK, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    return part - hole.move(Location((*L["ring"], 0)))
+    part -= Pos(*L["ring"], 0) * hole
+    if CHIP:
+        pocket = Cylinder(CHIP_POCKET_D / 2, CHIP_POCKET, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        part -= Pos(*L["middle"], CHIP_BOTTOM) * pocket
+    return part
