@@ -8,6 +8,7 @@ part.py の PRINT で指定できるもの (すべて省略可):
         "filament_settings": {...},          # フィラメント設定の上書き
         "copies": {"ピース名": 2},            # 同じピースを複数個並べる
         "pause_at": [1.0],                   # この高さ (mm) まで刷り終えたら一時停止する (物を埋め込むとき)
+        "nozzle": 0.2,                       # この部品を刷ってよいノズルの太さの上限 (細い線を 0.2 mm 用に描いた物)
     }
 
 一時停止 (pause_at) の仕組み: 機種の「層が変わるたびに実行する G コード」に、決まった層でだけ一時停止の命令
@@ -244,7 +245,7 @@ def slice_part(built: Built, *, process: str | None = None, filament: str | None
 
     spec = config.spec()
     ps = built.print_settings
-    unknown = set(ps) - {"process", "filament", "settings", "filament_settings", "copies", "pause_at"}
+    unknown = set(ps) - {"process", "filament", "settings", "filament_settings", "copies", "pause_at", "nozzle"}
     if unknown:
         raise SliceError(f"PRINT に未知のキーがあります: {sorted(unknown)}")
     settings = dict(ps.get("settings", {}))
@@ -255,6 +256,10 @@ def slice_part(built: Built, *, process: str | None = None, filament: str | None
         raise SliceError(f"copies に存在しないピース名があります: {sorted(set(copies) - set(piece_names))}")
 
     machine = profiles.flatten("machine", spec.machine)
+    nozzle = float(machine["nozzle_diameter"][0])
+    if "nozzle" in ps and nozzle > float(ps["nozzle"]) + 1e-6:
+        raise SliceError(f"この部品は {ps['nozzle']} mm 以下のノズル用です (細い線が刷れない)。printer.toml のノズルは "
+                         f"{nozzle} mm。持ち主がノズルを替えたか確かめて、printer.toml を合わせること (CLAUDE.md の「ノズル」)")
     process_cfg = _with_overrides(
         profiles.flatten("process", resolve_profile("process", process or ps.get("process", spec.process))),
         settings, per_filament=False,

@@ -1,10 +1,13 @@
 # プリンタの構成と、スライス時の既定値。秘密情報はここに書かない (printer.local.toml へ)。
+# ノズルを替えたら machine・profile_suffix・process をそろえて変える (CLAUDE.md の「ノズル」)。
+#   0.4 mm: "Bambu Lab A1 mini 0.4 nozzle" / "@BBL A1M" / "0.20mm Standard"
+#   0.2 mm: "Bambu Lab A1 mini 0.2 nozzle" / "@BBL A1M 0.2 nozzle" / "0.10mm Standard"  (2026-11-21 から)
 
 [printer]
-machine = "Bambu Lab A1 mini 0.4 nozzle"
-profile_suffix = "@BBL A1M"
+machine = "Bambu Lab A1 mini 0.2 nozzle"
+profile_suffix = "@BBL A1M 0.2 nozzle"
 plate = "Textured PEI Plate"
 
 [defaults]
-process = "0.20mm Standard"
+process = "0.10mm Standard"
 filament = "Bambu PLA Basic"

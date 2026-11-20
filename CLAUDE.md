@@ -128,16 +128,21 @@ uv run pytest                              LAN 直結用コードの通信テス
 
 ## ノズル
 
-今付いているのは 0.4 mm。持ち主は **0.2 mm のノズルも持っている** (2026-11-20 に本人から。まだ使ったことはない)。
+**2026-11-21 から 0.2 mm を付けている** (`parts/dog-keychain-mini` のため。それまでは 0.4 mm)。持ち主は両方持っている。
+今どちらが付いているかは `printer.toml` に書いてある (替えたら必ず合わせる)。
 
 - 0.2 mm が効くのは細かい所: 細い線 (0.4 mm だと 1.0 mm まで太らせている)、小さい文字、フィギュアの顔。
   層も 0.06〜0.14 mm まで薄くできる。代わりに印刷時間が数倍になる。大きくて単純な物には向かない。
 - 細かい絵や文字が主役の物を頼まれたら、形を考える段階で「0.2 mm に替えますか」と聞く
   (交換は持ち主の作業。印刷の途中では替えられない)。
-- 替えたら、こちらでやること: `printer.toml` の `machine` を `Bambu Lab A1 mini 0.2 nozzle`、`profile_suffix` を
-  `@BBL A1M 0.2 nozzle`、既定の `process` を `0.10mm Standard` にする (プリセットは同梱されている)。
+- 交換の手順は公式 (https://wiki.bambulab.com/en/a1/maintenance/replace-hotend)。電源を切り、ノズルが冷めてから。
+  フィラメントは先にツールヘッド右のレバーで切る。留め金は左側を倒してから右側を留める。
+  交換後に **本体の画面で Settings → Maintenance → Nozzle を変えてもらう** (Bambu Studio からは変えられない)。
+- 替えたら、こちらでやること: `printer.toml` の `machine`・`profile_suffix`・既定の `process` (書き方はそのファイルの冒頭)。
   `v3d/fit.py` の値は 0.4 mm で測ったものなので、はめあいの要る物を作る前に `parts/fit-test` を刷り直して測る。
-  送信ダイアログで、ノズルが 0.2mm と表示されることも確かめる。0.4 mm に戻したら、設定も戻す。
+  送信ダイアログで、プリンタのノズルの表示 (`Bambu Lab A1 mini 0.2mm`) を確かめる。
+- 細い線を 0.2 mm 用に描いた部品は `PRINT["nozzle"] = 0.2` を書く。printer.toml が 0.4 mm のままだとスライスを断る。
+  逆 (0.4 mm 用に描いた部品を 0.2 mm で刷る) は刷れる。時間がかかるだけ。
 
 ## A1 mini 向けの設計の決まり
 
@@ -170,6 +175,10 @@ uv run pytest                              LAN 直結用コードの通信テス
 - 物をはめるくぼみは、深さが相手の厚みの半分 (1 mm)・すき間が片側 0.2 mm だと「載っているだけ」になり、
   「ハマってる感がもっと欲しかった」と言われた (`parts/aikatsu-card-stand`)。はまった手ごたえが要るなら、
   厚みが全部入る深さにして、ツメなどの押さえを付ける。
+- 絵のキーホルダーの大きさ違いは、`parts/dog-keychain` の `Size` のように、線の太さを絵と一緒に縮め、
+  ノズルで刷れる太さ (溝の幅で 0.4 mm ノズルは 1.0 mm、0.2 mm ノズルは 0.5 mm) で止める。0.4 mm ノズルでは
+  直径 40 mm くらいまで。30 mm にしたら瞳がつぶれた。それより小さいなら 0.2 mm ノズルを勧める。
+  候補は同じ縮尺で並べて見せる (`parts/dog-keychain/compare_sizes.py`)。
 - 既定は PLA・0.20 mm。屋外や車内など熱がかかる場所は PETG を提案する
   (その時はフィラメントの有無を確認)。
 
@@ -197,7 +206,7 @@ uv run pytest                              LAN 直結用コードの通信テス
    - 「Configuration update」(新しいプリセットを入れるか) が出たら Cancel (`click 1096 737`)。
      スライスは CLI と展開済みプリセットで済んでいるので、ここで入れる必要はない。
 3. `click 1538 72` (Print plate) → 数秒待って `shot`。「Send print job」ダイアログで確認:
-   - Printer が `printer.local.toml` の `[cloud] device_name` と同じ名前 / Bambu Lab A1 mini 0.4mm、
+   - Printer が `printer.local.toml` の `[cloud] device_name` と同じ名前 / Bambu Lab A1 mini と、printer.toml と同じノズルの太さ、
      プレートが Textured PEI
    - Filament の種類がスライスと同じで、行き先が Ext (外部スプール。AMS は付いていない)
    - Timelapse は Off にする (`click 763 675`)。Auto Bed Leveling と Flow Dynamics Calibration は On
@@ -251,6 +260,10 @@ Bambu Studio 自体のログイン (Bambu のトークン。Google の情報で�
   この確認を外したり緩めたりしない。
 - この環境では CLI がサムネイルを描けないので、こちらで描いた画像を 3MF に埋めている。
 - Bambu Studio を更新したら `scripts/setup.sh` のバージョンを上げて再実行する。
+- 作業環境 (コンテナ) は作り直されることがある (2026-11-21 0 時ごろに起きた)。ホームのファイル・Bambu のログイン・
+  展開済みの Bambu Studio は残るが、apt で入れた物、`/tmp`、動いていた仮想画面と Bambu Studio は消える。
+  スライスが終了コード 127 (`libwebkit2gtk-4.1.so.0` が見つからない) で失敗したら、`scripts/setup.sh` をもう一度流す。
+  プリンタは Bambu Studio とは別に動くので、送信済みの印刷は止まらない。
 
 ## git
 
