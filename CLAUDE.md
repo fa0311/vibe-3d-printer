@@ -49,8 +49,9 @@
 uv run python -m v3d new <名前>            雛形を作る
 uv run python -m v3d build <名前>          モデル生成 + 検査 + 画像 (out/ に出力)
 uv run python -m v3d slice <名前>          build してスライス → out/<名前>.gcode.3mf
-uv run python -m v3d profiles process      使える積層設定の一覧 (filament も同様)
                                            支えを使う部品では out/supports.png (本体と支えの位置) も出す
+                                           PRINT に pause_at があれば、一時停止の高さと目安の時間も出す
+uv run python -m v3d profiles process      使える積層設定の一覧 (filament も同様)
 scripts/studio-gui.sh open <ファイル>      純正 Bambu Studio で開く (印刷の送信に使う。下記)
 scripts/studio-gui.sh shot|click|key ...   その画面を撮る / 操作する
 uv run pytest                              LAN 直結用コードの通信テスト (模擬プリンタ)
@@ -103,6 +104,17 @@ uv run pytest                              LAN 直結用コードの通信テス
   立つかどうかの見積もり (重心が足の裏の内側にあるか) は、`parts/suica-bunny` で実物でも通用した
   (0.4 mm ノズル・高さ 80 mm。持ち主: 「安定して自立するし顔も良かった、かなり満足」)。次の置物もここから始める。
 - 丸い面は層の段々が目立つので、層は 0.16 mm (`"process": "0.16mm Optimal"`)。継ぎ目は `"seam_position": "back"`。
+
+## 印刷の途中で物を埋め込む (NFC チップなど)
+
+- `PRINT = {"pause_at": [高さ mm]}` で、その高さまで刷り終えたところで一時停止する (層の境目だけ指定できる)。
+  持ち主が物を置いて、本体の画面か Bambu Handy で再開する。スライスの報告に、止まる高さと開始からの目安の時間が出る。
+  仕組みと確かめ方は `v3d/slicer.py` の冒頭。**実機で止まるところは、まだ確かめていない** (`parts/nfc-test` で試す予定)。
+- 形は「底 → 物の入る空洞 → ふた」。空洞は物より少し深くする (縁から飛び出すとノズルが当たる)。
+  空洞の天井を刷る直前の高さを `pause_at` にする。ふたの 1 層目は宙に渡すので、ふたは 4 層以上とる。
+- 持ち主の NFC チップ: 丸形、直径 25.0 mm、厚み 0.9 mm (裏のテープのはくり紙を含む)。裏のテープで空洞の底に貼る。
+  持ち主の希望は「振ったときにカタカタ言わない」こと。
+- 止まるのは刷り始めて数分後のことが多い。その時間にプリンタの前にいられるかを、送る前に聞く。
 
 ## ノズル
 

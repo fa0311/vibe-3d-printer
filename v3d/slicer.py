@@ -7,7 +7,13 @@ part.py の PRINT で指定できるもの (すべて省略可):
         "settings": {"enable_support": 1},   # プロセス設定の上書き
         "filament_settings": {...},          # フィラメント設定の上書き
         "copies": {"ピース名": 2},            # 同じピースを複数個並べる
+        "pause_at": [1.0],                   # この高さ (mm) まで刷り終えたら一時停止する (物を埋め込むとき)
     }
+
+一時停止 (pause_at) の仕組み: 機種の「層が変わるたびに実行する G コード」に、決まった層でだけ一時停止の命令
+(機種プリセットの machine_pause_gcode。A1 mini は M400 U1) を出す条件文を足している。Bambu Studio の画面で
+「Add Pause」をしたときと同じ命令が、同じ場所 (その層を刷り始める直前) に入る。プリンタは頭をよけて止まり、
+本体の画面か Bambu Handy で再開するまで待つ。
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ class Sliced:
     filament_settings: dict
     copies: dict
     warnings: list[str]
+    pauses: list[dict]          # 一時停止: {"z": 止まる高さ, "layer": 次に刷る層 (1 始まり), "minute": 開始からの目安}
 
     @property
     def duration(self) -> str:
@@ -140,13 +147,64 @@ def _verify(gcode: str, machine: dict, process: dict, filament: dict, plate: str
         raise SliceError("スライス結果が指定した設定と一致しません:\n  " + "\n  ".join(wrong))
 
 
+PAUSE_MARK = "; v3d: pause here"
+
+
+def _pause_layers(heights: list[float], process: dict) -> dict[int, float]:
+    """止まる高さ → その直後に刷る層の番号 (0 始まり。layer_change_gcode の layer_num と同じ数え方)。"""
+    first, step = float(process["initial_layer_print_height"]), float(process["layer_height"])
+    out = {}
+    for z in heights:
+        done = round((z - first) / step) + 1          # ここまでに刷り終わっている層の数
+        if done < 1 or abs(first + (done - 1) * step - z) > 0.005:
+            below = first + max(int((z - first) // step), 0) * step
+            raise SliceError(f"pause_at {z} mm は層の境目ではありません。近い境目: {below:.2f} / {below + step:.2f} mm "
+                             f"(1 層目 {first} mm、以降 {step} mm ごと)")
+        out[done] = float(z)
+    return out
+
+
+def _with_pauses(machine: dict, layers: dict[int, float]) -> dict:
+    if not layers:
+        return machine
+    when = " or ".join(f"layer_num == {n}" for n in sorted(layers))
+    pause = machine["machine_pause_gcode"].strip()
+    extra = f"{{if {when}}}\n{PAUSE_MARK}\n{pause}\n{{endif}}"
+    return machine | {"layer_change_gcode": machine["layer_change_gcode"].rstrip("\n") + "\n" + extra}
+
+
+def _verify_pauses(gcode: str, layers: dict[int, float], pause: str, total_minutes: float) -> list[dict]:
+    """一時停止が、頼んだ高さを刷り終えた直後に、頼んだ数だけ入っているかを G コードで確かめる。"""
+    found, top, height, layer, remaining = [], 0.0, 0.0, 0, None
+    lines = gcode.split("; EXECUTABLE_BLOCK_START", 1)[-1].splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("; Z_HEIGHT: "):
+            top, layer = float(line[12:]), layer + 1
+        elif line.startswith("; LAYER_HEIGHT: "):
+            height = float(line[16:])
+        elif line.startswith("M73 P") and (m := re.search(r" R(\d+)", line)):
+            remaining = int(m.group(1))
+        elif line.strip() == PAUSE_MARK:
+            if lines[i + 1].strip() != pause:
+                raise SliceError(f"一時停止の印の次の行が {pause!r} ではありません: {lines[i + 1]!r}")
+            minute = None if remaining is None else max(round(total_minutes - remaining), 0)
+            found.append({"z": round(top - height, 3), "layer": layer, "minute": minute})
+    want = sorted(layers.values())
+    if [f["z"] for f in found] != [round(z, 3) for z in want]:
+        raise SliceError(f"一時停止の位置が指定と違います: 指定 {want} mm / 実際 {[f['z'] for f in found]} mm")
+    stray = sum(1 for ln in lines if ln.strip() == pause) - len(found)
+    if stray:
+        raise SliceError(f"指定していない一時停止 ({pause}) が {stray} 個入っています")
+    return found
+
+
 def slice_part(built: Built, *, process: str | None = None, filament: str | None = None) -> Sliced:
     if not built.ok:
         raise SliceError("モデルに問題があるためスライスしません (v3d build の出力を参照)")
 
     spec = config.spec()
     ps = built.print_settings
-    unknown = set(ps) - {"process", "filament", "settings", "filament_settings", "copies"}
+    unknown = set(ps) - {"process", "filament", "settings", "filament_settings", "copies", "pause_at"}
     if unknown:
         raise SliceError(f"PRINT に未知のキーがあります: {sorted(unknown)}")
     settings = dict(ps.get("settings", {}))
@@ -165,6 +223,8 @@ def slice_part(built: Built, *, process: str | None = None, filament: str | None
         profiles.flatten("filament", resolve_profile("filament", filament or ps.get("filament", spec.filament))),
         filament_settings, per_filament=True,
     )
+    pause_layers = _pause_layers([float(z) for z in ps.get("pause_at", [])], process_cfg)
+    machine = _with_pauses(machine, pause_layers)
     for cfg in (process_cfg, filament_cfg):
         compatible = cfg.get("compatible_printers") or []
         if compatible and spec.machine not in compatible:
@@ -220,6 +280,8 @@ def slice_part(built: Built, *, process: str | None = None, filament: str | None
     with zipfile.ZipFile(work / target) as z:
         gcode = z.read("Metadata/plate_1.gcode").decode("utf-8", "replace")
     _verify(gcode, machine, process_cfg, filament_cfg, spec.plate, settings, filament_settings)
+    pauses = _verify_pauses(gcode, pause_layers, machine["machine_pause_gcode"].strip(),
+                            float(plate["total_predication"]) / 60)
 
     header = gcode.split("; HEADER_BLOCK_END", 1)[0]
     meters = float(re.search(r"total filament length \[mm\] : ([\d.,]+)", header).group(1).split(",")[0]) / 1000
@@ -250,6 +312,7 @@ def slice_part(built: Built, *, process: str | None = None, filament: str | None
         filament_settings=filament_settings,
         copies=copies,
         warnings=warnings,
+        pauses=pauses,
     )
     (built.out / "slice.json").write_text(
         json.dumps(asdict(sliced) | {"file": final.name}, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -265,5 +328,8 @@ def report(s: Sliced) -> str:
     ]
     if s.settings or s.filament_settings:
         lines.append(f"  上書き: {s.settings | s.filament_settings}")
+    for p in s.pauses:
+        when = "" if p["minute"] is None else f"、開始から約 {p['minute']} 分後"
+        lines.append(f"  一時停止: 高さ {p['z']:.2f} mm まで刷ったところ ({p['layer']} 層目の前{when})。再開は本体か Bambu Handy で")
     lines += [f"  ! {w}" for w in s.warnings]
     return "\n".join(lines)
